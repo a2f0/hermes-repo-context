@@ -156,11 +156,15 @@ def run_claude_memory(args: argparse.Namespace) -> int:
             print("\nCannot tell whether Claude Code is running (lsof failed). Close its sessions in")
             print("these clones, then re-run with --allow-running.")
             return 1
-        busy = claude_memory.busy_clones(plans, live)
-        if busy:
-            print("\nClaude Code is running in these clones and could write memory during the merge:")
+        if live:
+            # Any session can write the shared directories, including one in a clone sync never
+            # scanned, so every session must be closed; affected clones are listed first.
+            busy = claude_memory.busy_clones(plans, live)
+            print("\nClaude Code is running and could write memory during the merge.")
             for clone in busy:
-                print(f"  {claude_memory.display(clone, home)}")
+                print(f"  in an affected clone: {claude_memory.display(clone, home)}")
+            for path in sorted(live):
+                print(f"  working in: {claude_memory.display(path, home)}")
             print("Close those sessions and re-run, or pass --allow-running.")
             return 1
     if args.apply:

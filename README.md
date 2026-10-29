@@ -50,8 +50,8 @@ section in their system prompt.
   then renames each merged source to `memory.merged-<date>`. A source stays in
   place when a file in it differs from the shared copy, it holds a symlink, or
   its clone could not be redirected. Claude Code does not lock its memory, so
-  `--apply` refuses while a Claude Code session works in an affected clone;
-  close it first (or pass `--allow-running`, which can lose a racing write). It is a dry run until `--apply`;
+  `--apply` refuses while any Claude Code session runs; close them first (or
+  pass `--allow-running`, which can lose a racing write). It is a dry run until `--apply`;
   `--alias=<project-key>=owner/repo` (with `=`, since project keys start with
   `-`) merges memory whose checkout is gone. A
   symlinked memory directory does not work, because Claude Code resolves the

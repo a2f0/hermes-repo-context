@@ -603,7 +603,10 @@ def test_apply_refuses_while_claude_runs_in_a_clone(env: dict[str, Path], monkey
     parser = argparse.ArgumentParser()
     cli.setup(parser)
     assert cli.main(parser.parse_args(["claude-memory", "--apply"])) == 1
-    assert "Claude Code is running in these clones" in capsys.readouterr().out
+    assert "in an affected clone: ~/github/demo" in capsys.readouterr().out
+    monkeypatch.setattr(cm, "live_claude_dirs", lambda: {(env["home"] / "elsewhere").resolve()})
+    assert cli.main(parser.parse_args(["claude-memory", "--apply"])) == 1
+    assert "working in: ~/elsewhere" in capsys.readouterr().out
     assert source(env, "one").is_dir() and source(env, "two").is_dir()
     assert cli.main(parser.parse_args(["claude-memory", "--apply", "--allow-running"])) == 0
     assert not source(env, "one").exists()

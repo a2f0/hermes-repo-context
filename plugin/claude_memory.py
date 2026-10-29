@@ -733,7 +733,7 @@ def live_claude_dirs() -> set[Path] | None:
 
 def busy_clones(plans: list[GroupPlan], live: set[Path]) -> list[Path]:
     """Clones in *plans* that a running Claude Code session works in (its cwd at or below them).
-    Claude Code does not lock its memory files, so ``apply`` needs those sessions closed."""
+    The CLI refuses ``apply`` while any session runs; this names the ones in affected clones."""
     busy = set()
     for g in plans:
         for clone in {*g.clone_sources, *g.clones, *g.watch}:
