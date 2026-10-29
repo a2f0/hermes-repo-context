@@ -17,16 +17,15 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
-import os
 import re
 import shutil
 import subprocess
-import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path, PurePosixPath
 
+from .identity import atomic_write as _atomic_write
 from .identity import git_env, identity_key, remote_url
 
 INDEX = "MEMORY.md"
@@ -128,6 +127,7 @@ class GroupPlan:
     dest: Path
     sources: list[Source] = field(default_factory=list)
     copies: list[tuple[Path, Path, PurePosixPath]] = field(default_factory=list)  # (source dir, file, rel)
+    providers: dict[PurePosixPath, list[Path]] = field(default_factory=dict)  # rel -> sources holding it
     conflicts: list[Path] = field(default_factory=list)
     skipped: list[Path] = field(default_factory=list)
     index_before: int = 0
@@ -168,20 +168,6 @@ def _clashes(rel: PurePosixPath, files: Iterable[PurePosixPath]) -> bool:
     if any(parent in files for parent in rel.parents if parent != PurePosixPath(".")):
         return True
     return any(rel in f.parents for f in files)
-
-
-def _atomic_write(path: Path, text: str) -> None:
-    """Write *path* through an exclusively created temporary file in its directory, then rename
-    it into place, so a planted temporary name or symlink is never written through."""
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
-    try:
-        with os.fdopen(fd, "w") as out:
-            out.write(text)
-        os.replace(tmp, path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
 
 
 def read_settings(path: Path) -> tuple[dict | None, str]:
@@ -225,8 +211,12 @@ def _plan_files(g: GroupPlan) -> None:
             elif rel in existing and existing[rel] != f.read_bytes():
                 g.conflicts.append(f)
                 g.keep(src.path, "a file differs from the shared copy")
+            elif rel in g.providers:
+                # Identical to a copy another source provides: this source depends on it too.
+                g.providers[rel].append(src.path)
             elif rel not in existing:
                 g.copies.append((src.path, f, rel))
+                g.providers[rel] = [src.path]
                 existing[rel] = f.read_bytes()
 
 
@@ -284,13 +274,18 @@ def plan(
     names: dict[PurePosixPath, str] = {}
     clones: dict[PurePosixPath, list[Path]] = {}
     sources: dict[PurePosixPath, list[Source]] = {}
-    stale: dict[PurePosixPath, list[Path]] = {}
+    stale: dict[PurePosixPath, list[tuple[Path, str]]] = {}
     # Live clones first, so their index lines lead the merged MEMORY.md; then aliases.
     entries = [
         (info["identity"], Source(projects / path_key(path) / "memory", Path(path)), info.get("url"))
         for path, info in checkouts.items()
     ]
     entries += [(identity, Source(projects / key / "memory", None), None) for key, identity in (aliases or {}).items()]
+    # Claude Code's project key folds every non-alphanumeric character to "-", so foo-bar and
+    # foo_bar share one memory directory; such a directory belongs to no single clone.
+    users: dict[Path, int] = {}
+    for _identity, src, _url in entries:
+        users[src.path] = users.get(src.path, 0) + 1
     for identity, src, url in entries:
         sub = memory_subpath(identity)
         if sub is None:
@@ -298,10 +293,13 @@ def plan(
         names.setdefault(sub, identity)
         clones.setdefault(sub, [])
         sources.setdefault(sub, [])
+        if users[src.path] > 1:
+            stale.setdefault(sub, []).append((src.path, "Claude Code shares this directory with another path"))
+            continue
         # The cache can be older than the checkout: a path reused for another repository must
         # not pour its memory into the cached one.
         if src.clone is not None and (not url or remote_url(src.clone) != url):
-            stale.setdefault(sub, []).append(src.path)
+            stale.setdefault(sub, []).append((src.path, "its clone's remote no longer matches the cache; re-run sync"))
             continue
         sources[sub].append(src)
         if src.clone is not None:
@@ -322,8 +320,8 @@ def plan(
         g.sources = [s for s in sources[sub] if _is_mergeable(s.path, dest)]
         for s in g.sources:
             s.fingerprint = fingerprint(s.path)
-        for path in stale.get(sub, []):
-            g.keep(path, "its clone's remote no longer matches the cache; re-run sync")
+        for path, reason in stale.get(sub, []):
+            g.keep(path, reason)
         # A clone whose memory directory is a symlink is not merged, so it must not be redirected.
         unclean = set()
         for s in sources[sub]:
@@ -388,9 +386,17 @@ def _redirect(g: GroupPlan, clone: Path, path: Path, target: str) -> None:
 
 
 def _copy(g: GroupPlan, src_dir: Path, f: Path, rel: PurePosixPath) -> None:
-    if symlink_under(g.dest, rel):
+    def failed(reason: str) -> None:
+        # Every source holding an identical copy relied on this one, so none of them merged.
         g.conflicts.append(f)
-        g.keep(src_dir, "the shared copy is behind a symlink")
+        for provider in g.providers.get(rel, [src_dir]):
+            g.keep(provider, reason)
+
+    if symlink_under(g.dest, rel):
+        failed("the shared copy is behind a symlink")
+        return
+    if f.is_symlink() or not f.is_file():
+        failed("the source file changed since planning")
         return
     target = g.dest / rel
     content = f.read_bytes()
@@ -400,14 +406,22 @@ def _copy(g: GroupPlan, src_dir: Path, f: Path, rel: PurePosixPath) -> None:
             out.write(content)
     except FileExistsError:
         if not target.is_file() or target.is_symlink() or target.read_bytes() != content:
-            g.conflicts.append(f)
-            g.keep(src_dir, "a file differs from the shared copy")
+            failed("a file differs from the shared copy")
         return
     except OSError:  # a file where a directory is needed, or the reverse
-        g.conflicts.append(f)
-        g.keep(src_dir, "a file and a directory share a name")
+        failed("a file and a directory share a name")
         return
     shutil.copystat(f, target)
+
+
+def _unredirect(g: GroupPlan, clone: Path, path: Path, target: str) -> None:
+    """Undo a redirect made in this run, so a clone whose memory changed keeps reading it."""
+    data, _note = read_settings(path)
+    if data is not None and data.get(SETTING) == target:
+        data.pop(SETTING)
+        with contextlib.suppress(OSError):
+            _atomic_write(path, json.dumps(data, indent=2) + "\n")
+            g.redirected.discard(clone)
 
 
 def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
@@ -424,16 +438,24 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
         for s in g.sources:
             if s.path not in g.kept_paths and s.changed():
                 g.keep(s.path, "changed since planning; re-run to merge it")
+        redirected_now: dict[Path, tuple[Path, str]] = {}
         for clone, path, data in g.settings_changes:
             if not any(s.clone == clone and s.path in g.kept_paths for s in g.sources):
                 _redirect(g, clone, path, data[SETTING])
+                if clone in g.redirected:
+                    redirected_now[clone] = (path, data[SETTING])
         for src in g.archivable():
             if src.changed():
                 g.keep(src.path, "changed since planning; re-run to merge it")
+                if src.clone in redirected_now:
+                    _unredirect(g, src.clone, *redirected_now[src.clone])
                 continue
             target = src.path.with_name(f"memory.merged-{stamp}")
             n = 1
             while target.exists():
                 n += 1
                 target = src.path.with_name(f"memory.merged-{stamp}.{n}")
-            src.path.rename(target)
+            try:
+                src.path.rename(target)
+            except OSError as exc:
+                g.keep(src.path, f"archiving it failed: {exc}")

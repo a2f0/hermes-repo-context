@@ -328,3 +328,61 @@ def test_collision_appearing_after_planning_does_not_abort(env: dict[str, Path])
     assert (dest / "notes").read_text() == "appeared"
     assert (source(env, "two") / "notes" / "n.md").is_file()
     assert (dest / "a.md").read_text() == "a"
+
+
+def test_clones_sharing_a_claude_project_directory_are_left_alone(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    dash = make_clone(home / "github" / "foo-bar", "git@github.com:a2f0/foo-bar.git")
+    under = make_clone(home / "github" / "foo_bar", "git@github.com:a2f0/other.git")
+    for clone in (dash, under):
+        (clone / ".gitignore").write_text(".claude/settings.local.json\n")
+    shared = claude / "projects" / cm.path_key(str(dash)) / "memory"
+    assert shared == claude / "projects" / cm.path_key(str(under)) / "memory"
+    shared.mkdir(parents=True)
+    (shared / "x.md").write_text("whose?")
+    found = {
+        str(dash): {"url": "git@github.com:a2f0/foo-bar.git", "identity": "a2f0/foo-bar"},
+        str(under): {"url": "git@github.com:a2f0/other.git", "identity": "a2f0/other"},
+    }
+    plans = cm.plan(found, claude_home=claude, home=home)
+    assert all(not g.sources and not g.settings_changes for g in plans)
+    assert all(shared in g.kept_paths for g in plans)
+    cm.apply(plans, today="2026-10-29")
+    assert (shared / "x.md").is_file()
+    assert not (dash / ".claude" / "settings.local.json").exists()
+
+
+def test_failed_copy_keeps_every_source_that_relied_on_it(env: dict[str, Path]) -> None:
+    for clone in ("one", "two"):
+        (source(env, clone) / "same.md").write_text("same")
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    assert plans[0].providers[PurePosixPath("same.md")] == [source(env, "one"), source(env, "two")]
+    dest = env["claude"] / "repo-memory" / "a2f0" / "demo"
+    dest.mkdir(parents=True)
+    (dest / "same.md").write_text("written since planning")
+    cm.apply(plans, today="2026-10-29")
+    assert (dest / "same.md").read_text() == "written since planning"
+    for clone in ("one", "two"):
+        assert (source(env, clone) / "same.md").is_file()
+        assert "autoMemoryDirectory" not in cm.read_settings(env[clone] / ".claude" / "settings.local.json")[0]
+
+
+def test_memory_written_after_redirect_restores_the_setting(env: dict[str, Path], monkeypatch) -> None:
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    real_redirect = cm._redirect
+
+    def redirect_then_write(g, clone, path, target):
+        real_redirect(g, clone, path, target)
+        if clone == env["two"]:
+            (source(env, "two") / "during.md").write_text("written by a running session")
+
+    monkeypatch.setattr(cm, "_redirect", redirect_then_write)
+    cm.apply(plans, today="2026-10-29")
+    two = json.loads((env["two"] / ".claude" / "settings.local.json").read_text())
+    assert "autoMemoryDirectory" not in two
+    assert (source(env, "two") / "during.md").is_file()
+    assert env["two"] not in plans[0].redirected
+    one = json.loads((env["one"] / ".claude" / "settings.local.json").read_text())
+    assert one["autoMemoryDirectory"] == SHARED
+    assert not source(env, "one").exists()

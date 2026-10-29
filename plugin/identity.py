@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import subprocess
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -122,6 +124,21 @@ def remote_url(root: str | Path) -> str | None:
         return url
     remotes = (git(root, "remote") or "").split()
     return git(root, "remote", "get-url", remotes[0]) if remotes else None
+
+
+def atomic_write(path: Path, text: str) -> None:
+    """Write *path* through an exclusively created temporary file in its directory, then rename
+    it into place: readers never see a partial file, and a planted temporary name or symlink is
+    never written through."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w") as out:
+            out.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 def load_cache() -> dict[str, Any]:

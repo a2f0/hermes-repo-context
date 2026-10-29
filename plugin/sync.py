@@ -166,7 +166,8 @@ def sync(
         store.save(kept + result.trusted_added)
     dest = ident.cache_path()
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(
+    ident.atomic_write(
+        dest,
         json.dumps(
             {
                 "updated": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -177,6 +178,6 @@ def sync(
             },
             indent=2,
         )
-        + "\n"
+        + "\n",
     )
     return result
