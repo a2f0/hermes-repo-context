@@ -21,20 +21,20 @@ _GIT_TIMEOUT_S = 3
 _SCHEME_URL_RE = re.compile(r"^[a-z][a-z0-9+.-]*://(?:[^@/]+@)?(?P<host>[^/:]+)(?::\d+)?/(?P<path>.+?)(?:\.git)?/*$")
 _SCP_URL_RE = re.compile(r"^(?:[^@/]+@)?(?P<host>[^/:]+):(?P<path>[^/].*?)(?:\.git)?/*$")
 _SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
-_HOST_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$")
+# GitHub alone: renames resolve through gh, and its names are case-insensitive two-part paths,
+# so identities never nest, collide by case, or differ only by a port.
+_GITHUB_HOSTS = frozenset({"github.com", "ssh.github.com", "www.github.com"})
 _SEGMENT_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
 _UNSAFE_TEXT_RE = re.compile(r"[`\x00-\x1f\x7f\u2028\u2029]")
 
 
 def valid_identity(identity: str | None) -> bool:
-    """Whether *identity* is ``owner/repo`` or ``host/group.../repo`` built only from safe name
-    characters, so it can be shown in a prompt or used as a directory name."""
+    """Whether *identity* is a GitHub ``owner/repo`` built only from safe name characters, so it
+    can be shown in a prompt or used as a directory name."""
     if not identity:
         return False
     parts = identity.split("/")
-    if len(parts) < 2 or not all(_SEGMENT_RE.match(p) and p not in (".", "..") for p in parts):
-        return False
-    return len(parts) == 2 or bool(_HOST_RE.match(parts[0]))
+    return len(parts) == 2 and all(_SEGMENT_RE.match(p) and p not in (".", "..") for p in parts)
 
 
 def prompt_path(path: Path | str) -> str:
@@ -70,7 +70,7 @@ def cache_path() -> Path:
 
 
 def parse_remote(url: str) -> str | None:
-    """``git@github.com:a2f0/x.git`` -> ``a2f0/x``; other hosts keep a ``host/`` prefix."""
+    """``git@github.com:a2f0/x.git`` -> ``a2f0/x``; None for other hosts."""
     url = (url or "").strip()
     m = _SCHEME_URL_RE.match(url) if "://" in url else _SCP_URL_RE.match(url)
     if not m:
@@ -78,18 +78,17 @@ def parse_remote(url: str) -> str | None:
     host, path = m.group("host").lower(), m.group("path").strip("/")
     if "/" not in path:
         return None
-    identity = path if host == "github.com" else f"{host}/{path}"
-    return identity if valid_identity(identity) else None
+    return path if host in _GITHUB_HOSTS and valid_identity(path) else None
 
 
 def identity_key(identity: str) -> str:
-    """Comparison key: GitHub (``owner/repo``) is case-insensitive; other hosts keep case."""
-    return identity.lower() if identity.count("/") == 1 else identity
+    """Comparison key: GitHub names are case-insensitive."""
+    return identity.lower()
 
 
 def names_identity(text: str, identity: str) -> bool:
-    """Whether *text* names *identity*, case-insensitively only where the host is."""
-    return identity.lower() in text.lower() if identity.count("/") == 1 else identity in text
+    """Whether *text* names *identity*, ignoring case as GitHub does."""
+    return identity.lower() in text.lower()
 
 
 def skill_name(identity: str) -> str | None:

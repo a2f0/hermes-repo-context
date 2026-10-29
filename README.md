@@ -23,8 +23,8 @@ section in their system prompt.
 ## What it does
 
 - **Session prompt.** At session start the plugin resolves the working
-  directory's checkout to its remote (`owner/repo` on GitHub, `host/path`
-  elsewhere) and names the repo skill `<owner>-<repo>`: load it if it exists,
+  directory's checkout to its GitHub remote (`owner/repo`) and names the repo
+  skill `<owner>-<repo>`: load it if it exists,
   create it in the `repos` category when a repository-specific lesson appears,
   and keep memory for facts that hold in every repository. A skill counts only
   when it names its `owner/repo`; if another repository already holds the flat
@@ -44,9 +44,8 @@ section in their system prompt.
   `--trust owner/repo` covers another repository's clones too.
 - **`hermes repo-context claude-memory`** shares Claude Code auto memory per
   remote. It merges each clone's `~/.claude/projects/<path>/memory` into
-  `~/.claude/repo-memory/<owner>/<repo>` (lowercased for GitHub; a repository
-  on another host gets a short hash suffix, since those hosts may be
-  case-sensitive), sets `autoMemoryDirectory` in each
+  `~/.claude/repo-memory/<owner>/<repo>` (lowercased, as GitHub compares
+  names), sets `autoMemoryDirectory` in each
   clone's `.claude/settings.local.json` (only where Git ignores that file), and
   then renames each merged source to `memory.merged-<date>`. A source stays in
   place when a file in it differs from the shared copy, it holds a symlink, or

@@ -56,7 +56,7 @@ def test_path_key_matches_claude_code() -> None:
 def test_memory_subpath_keeps_repositories_apart() -> None:
     assert cm.memory_subpath("A2F0/Matrix") == PurePosixPath("a2f0/matrix")
     assert cm.memory_subpath("a-b/c") != cm.memory_subpath("a/b-c")
-    assert str(cm.memory_subpath("gitlab.com/group/project")).startswith("gitlab.com/group/project-")
+    assert cm.memory_subpath("gitlab.com/group/project") is None
     assert cm.memory_subpath("a2f0/..") is None
     assert cm.memory_subpath("solo") is None
 
@@ -195,16 +195,6 @@ def test_index_limit_warning(env: dict[str, Path]) -> None:
     big.write_text("".join(f"- [N{i}](n{i}.md) — {'x' * 200}\n" for i in range(150)))
     plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
     assert plans[0].over_limit
-
-
-def test_case_sensitive_hosts_keep_case_variants_apart() -> None:
-    upper = cm.memory_subpath("git.example.com/team/App")
-    lower = cm.memory_subpath("git.example.com/team/app")
-    assert upper != lower
-    assert str(upper).lower() != str(lower).lower()
-    assert str(upper).startswith("git.example.com/team/app-")
-    # A repository named after another's hashed directory gets its own hash.
-    assert cm.memory_subpath(f"git.example.com/team/{upper.name}") not in (upper, lower)
 
 
 def test_symlinked_settings_file_is_never_written(env: dict[str, Path], tmp_path: Path) -> None:
@@ -500,3 +490,8 @@ def test_index_entries_for_copies_failing_at_apply_stay_behind(env: dict[str, Pa
     cm.apply(plans, today="2026-10-29")
     index = (dest / "MEMORY.md").read_text()
     assert "a.md" in index and "b.md" not in index
+
+
+def test_link_targets_ignore_fragments_queries_and_urls() -> None:
+    line = "- [T](./topic.md#details) [Q](q%20x.md?v=1) [W](https://example.com/a.md) [M](mailto:x@y)"
+    assert cm.link_targets(line) == {PurePosixPath("topic.md"), PurePosixPath("q x.md")}

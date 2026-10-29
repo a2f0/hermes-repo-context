@@ -18,7 +18,8 @@ from conftest import make_clone
         ("https://github.com/a2f0/agent-tool/", "a2f0/agent-tool"),
         ("ssh://git@github.com:22/a2f0/x.git", "a2f0/x"),
         ("https://user@github.com/A2F0/Repo.git", "A2F0/Repo"),
-        ("git@gitlab.com:group/sub/project.git", "gitlab.com/group/sub/project"),
+        ("git@gitlab.com:group/sub/project.git", None),
+        ("ssh://git@git.example.com:2222/team/app.git", None),
         ("nonsense", None),
         ("", None),
     ],
@@ -33,7 +34,6 @@ def test_parse_remote(url: str, expected: str | None) -> None:
         ("a2f0/matrix", "a2f0-matrix"),
         ("A2F0/Repo", "a2f0-repo"),
         ("a2f0/a2f0.net", "a2f0-a2f0.net"),
-        ("gitlab.com/group/project", "gitlab.com-group-project"),
         ("a2f0/bad name", None),
     ],
 )
@@ -120,9 +120,8 @@ def test_occupied_fallback_skill_name_is_not_claimed(hermes_home: Path) -> None:
 
 def test_identity_case_rules() -> None:
     assert ident.identity_key("A2F0/Matrix") == "a2f0/matrix"
-    assert ident.identity_key("git.example.com/team/App") == "git.example.com/team/App"
     assert ident.names_identity("clone of a2f0/matrix", "A2F0/Matrix")
-    assert not ident.names_identity("clone of git.example.com/team/app", "git.example.com/team/App")
+    assert not ident.valid_identity("git.example.com/team/app")
 
 
 def test_remote_identities_with_unsafe_characters_are_rejected() -> None:
@@ -154,7 +153,7 @@ def test_alternate_skill_is_found_once_the_flat_name_is_free(hermes_home: Path) 
         ("git@github.com:1234/repo.git", "1234/repo"),
         ("github.com:a2f0/x", "a2f0/x"),
         ("ssh://git@github.com:22/a2f0/x.git", "a2f0/x"),
-        ("ssh://git@git.example.com:2222/team/app.git", "git.example.com/team/app"),
+        ("ssh://git@ssh.github.com:443/a2f0/x.git", "a2f0/x"),
         ("https://github.com/a2f0/x/", "a2f0/x"),
     ],
 )

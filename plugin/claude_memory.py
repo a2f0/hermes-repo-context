@@ -20,13 +20,14 @@ import json
 import re
 import shutil
 import subprocess
+import urllib.parse
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path, PurePosixPath
 
 from .identity import atomic_write as _atomic_write
-from .identity import git_env, remote_url
+from .identity import git_env, remote_url, valid_identity
 
 INDEX = "MEMORY.md"
 INDEX_MAX_LINES, INDEX_MAX_BYTES = 200, 25_000
@@ -56,20 +57,11 @@ def path_key(path: str) -> str:
 
 
 def memory_subpath(identity: str) -> PurePosixPath | None:
-    """``a2f0/matrix`` -> ``a2f0/matrix``: one directory level per identity segment, so two
-    repositories never share a directory. None when a segment is not a safe directory name.
-
-    GitHub names (``owner/repo``) are case-insensitive and are lowercased. Other hosts may be
-    case-sensitive while the filesystem is not, so their last segment always carries a short
-    hash of the exact identity: ``App`` and ``app`` differ, and no repository can be named
-    after another's hashed directory, because its own name gets its own hash."""
-    parts = identity.split("/")
-    if len(parts) < 2 or not all(_SEGMENT_RE.match(p) and p not in (".", "..") for p in parts):
+    """``A2F0/Matrix`` -> ``a2f0/matrix``: always two levels, lowercased as GitHub compares names,
+    so two repositories never share or nest a directory. None for anything else."""
+    if not valid_identity(identity):
         return None
-    lower = [p.lower() for p in parts]
-    if len(parts) > 2:  # host/group.../repo: not GitHub
-        lower[-1] = f"{lower[-1]}-{hashlib.sha256(identity.encode()).hexdigest()[:12]}"
-    return PurePosixPath(*lower)
+    return PurePosixPath(*identity.lower().split("/"))
 
 
 def display(path: Path, home: Path) -> str:
@@ -131,7 +123,12 @@ def merge_index(current: list[str], incoming: list[str]) -> tuple[list[str], int
 
 def link_targets(line: str) -> set[PurePosixPath]:
     """Relative files an index line links to."""
-    return {PurePosixPath(m) for m in _LINK_RE.findall(line) if "://" not in m and not m.startswith("/")}
+    targets = set()
+    for link in _LINK_RE.findall(line):
+        path = re.split(r"[#?]", link, maxsplit=1)[0]
+        if path and ":" not in path and not path.startswith("/"):
+            targets.add(PurePosixPath(urllib.parse.unquote(path)))
+    return targets
 
 
 def symlink_under(dest: Path, rel: PurePosixPath) -> bool:

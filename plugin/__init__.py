@@ -1,7 +1,7 @@
 """Hermes plugin: key repository learning by Git remote instead of checkout path.
 
 At session start the plugin resolves the working directory's checkout to its
-remote identity (``owner/repo`` on GitHub, ``host/path`` elsewhere) and adds a
+GitHub remote (``owner/repo``; other hosts get nothing) and adds a
 short, cache-safe system prompt section naming that identity and its repo skill
 (``<owner>-<repo>``), so every clone of a repository points the agent at the same
 lessons. ``hermes repo-context`` adds the sync, show, and claude-memory commands.

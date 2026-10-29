@@ -93,7 +93,7 @@ def run_sync(args: argparse.Namespace) -> int:
         for line in groups[identity]:
             print(f"      {line}")
     for path in result.unresolved:
-        print(f"  unresolved (no parsable remote): {path}")
+        print(f"  skipped (no GitHub remote): {path}")
     print(f"\nCache: {ident.cache_path()}")
     return 0
 

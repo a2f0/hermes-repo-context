@@ -112,14 +112,12 @@ def test_manifest_in_an_untrusted_clone_grants_nothing(workspace: dict[str, Path
     assert store.saved == []
 
 
-def test_case_sensitive_host_does_not_match_another_case(tmp_path: Path) -> None:
+def test_clones_on_other_hosts_are_unresolved(tmp_path: Path) -> None:
     root = tmp_path / "src"
-    upper = make_clone(root / "upper", "git@git.example.com:team/App.git")
-    make_clone(root / "lower", "git@git.example.com:team/app.git")
-    result = sync_mod.sync(
-        [root], extra_trusted=["git.example.com/team/App"], trust_store=FakeTrust([]), canonical=FakeGitHub()
-    )
-    assert result.trusted_added == [str(upper)]
+    other = make_clone(root / "other", "git@git.example.com:team/app.git")
+    result = sync_mod.sync([root], trust_store=FakeTrust([]), canonical=FakeGitHub())
+    assert result.checkouts == {}
+    assert result.unresolved == [str(other)]
 
 
 def test_trust_names_follow_renames(workspace: dict[str, Path]) -> None:

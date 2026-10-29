@@ -124,7 +124,7 @@ def sync(
 
     def current_name(name: str) -> str:
         """GitHub's current name for *name* (renames followed), cached; other hosts unchanged."""
-        if name.count("/") != 1 or not ident.valid_identity(name):
+        if not ident.valid_identity(name):
             return name
         if name not in resolved:
             found = canonical(name)
