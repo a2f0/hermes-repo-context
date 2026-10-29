@@ -645,3 +645,19 @@ def test_alias_assigns_a_reused_paths_memory(env: dict[str, Path]) -> None:
     assert not source(env, "two").exists()
     two = json.loads((env["two"] / ".claude" / "settings.local.json").read_text())
     assert two["autoMemoryDirectory"] == SHARED
+
+
+def test_merge_index_keeps_nested_sections_under_their_parents() -> None:
+    current = ["## Project", "- [P](p.md)", "## Feedback", "- [F](f.md)"]
+    merged, added = cm.merge_index(current, ["## Project", "### Build", "- [B](b.md)"])
+    assert merged == ["## Project", "- [P](p.md)", "", "### Build", "- [B](b.md)", "## Feedback", "- [F](f.md)"]
+    assert added == 2
+    merged, added = cm.merge_index(["## Feedback", "- [F](f.md)"], ["## Project", "### Build", "- [B](b.md)"])
+    assert merged == ["## Feedback", "- [F](f.md)", "", "## Project", "### Build", "- [B](b.md)"]
+    assert cm.merge_index(merged, ["## Project", "### Build", "- [B](b.md)"])[1] == 0
+
+
+def test_busy_check_covers_clones_whose_memory_an_alias_claims(env: dict[str, Path]) -> None:
+    key = cm.path_key(str(env["two"]))
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"], aliases={key: "a2f0/old"})
+    assert cm.busy_clones(plans, {env["two"].resolve()}) == [env["two"]]

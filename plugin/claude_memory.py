@@ -112,17 +112,46 @@ def _unit_key(unit: str) -> str:
     return unit.strip()
 
 
+def _level(heading: str | None) -> int:
+    return 0 if heading is None else len(heading) - len(heading.lstrip("#"))
+
+
 def merge_index(current: list[str], incoming: list[str]) -> tuple[list[str], int]:
-    """*current* with the units of *incoming* it lacks, each under the heading it had in
-    *incoming* (a heading *current* lacks is appended with its units), and how many lines that
-    added. Units are lines and whole fenced blocks, compared as multisets within a section, so
-    blocks stay intact and an entry filed under two headings survives. Existing lines keep their
-    order and form."""
+    """*current* with what *incoming* adds, and how many lines that is. Each unit (a line or a
+    whole fenced block) goes under the heading it had in *incoming*; units compare as multisets
+    within a section, so blocks stay intact and an entry filed under two headings survives. A
+    heading *current* lacks is inserted after its nearest ancestor's subtree (at the end when it
+    has none), so nested sections keep their parents. Existing lines keep their order and form."""
     sections = _sections(current)
     added = 0
+    chain: list[str] = []  # the incoming headings enclosing the current one
+
+    def find(heading: str | None) -> int | None:
+        return next((i for i, (h, _) in enumerate(sections) if h == heading), None)
+
     for heading, units in _sections(incoming):
-        body = next((b for h, b in sections if h == heading), None)
-        have = Counter(_unit_key(u) for u in body or [] if _unit_key(u))
+        if heading is not None:
+            chain = [h for h in chain if _level(h) < _level(heading)]
+        idx = find(heading)
+        if idx is None:
+            pos = len(sections)
+            for ancestor in reversed(chain):
+                a = find(ancestor)
+                if a is not None:
+                    pos = a + 1
+                    while pos < len(sections) and _level(sections[pos][0]) > _level(ancestor):
+                        pos += 1
+                    break
+            before = sections[pos - 1][1]
+            if before and before[-1].strip():
+                before.append("")
+            sections.insert(pos, (heading, []))
+            idx = pos
+            added += 1
+        if heading is not None:
+            chain.append(heading)
+        body = sections[idx][1]
+        have = Counter(_unit_key(u) for u in body if _unit_key(u))
         seen: Counter[str] = Counter()
         new = []
         for unit in units:
@@ -135,13 +164,6 @@ def merge_index(current: list[str], incoming: list[str]) -> tuple[list[str], int
         if not new:
             continue
         added += sum(unit.count("\n") + 1 for unit in new)
-        if body is None:
-            last = sections[-1][1]
-            if last and last[-1].strip():
-                last.append("")
-            sections.append((heading, new))
-            added += 1
-            continue
         end = len(body)
         while end and not body[end - 1].strip():
             end -= 1
@@ -208,6 +230,7 @@ class GroupPlan:
     digests: dict[PurePosixPath, str] = field(default_factory=dict)  # rel -> planned content hash
     clone_sources: dict[Path, Path] = field(default_factory=dict)  # clone -> its memory directory
     target: str = ""  # the autoMemoryDirectory value that points at dest
+    clones: list[Path] = field(default_factory=list)  # every clone of this repository
     failed_rels: set[PurePosixPath] = field(default_factory=set)  # copies that failed at apply time
     conflicts: list[Path] = field(default_factory=list)
     skipped: list[Path] = field(default_factory=list)
@@ -444,6 +467,7 @@ def plan(
             s.fingerprint = fingerprint(s.path)
         g.clone_sources = {s.clone: s.path for s in sources[sub] if s.clone is not None}
         g.target = display(dest, home)
+        g.clones = list(clones[sub])
         for path, reason in stale.get(sub, []):
             g.keep(path, reason)
         # A clone whose memory directory is a symlink is not merged, so it must not be redirected.
@@ -601,7 +625,7 @@ def busy_clones(plans: list[GroupPlan], live: set[Path]) -> list[Path]:
     Claude Code does not lock its memory files, so ``apply`` needs those sessions closed."""
     busy = set()
     for g in plans:
-        for clone in g.clone_sources:
+        for clone in {*g.clone_sources, *g.clones}:
             real = clone.resolve()
             if any(d == real or real in d.parents for d in live):
                 busy.add(clone)
