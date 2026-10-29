@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -40,12 +41,58 @@ def test_parse_remote(url: str, expected: str | None) -> None:
     [
         ("a2f0/matrix", "a2f0-matrix"),
         ("A2F0/Repo", "a2f0-repo"),
-        ("a2f0/a2f0.net", "a2f0-a2f0.net"),
+        ("a2f0/a2f0.net", "a2f0-a2f0-net"),
+        ("a2f0/.github", "a2f0--github"),
+        ("a2f0/snake_case", "a2f0-snake_case"),
         ("a2f0/bad name", None),
+        ("a2f0/" + "x" * 59, "a2f0-" + "x" * 59),
+        ("a2f0/" + "x" * 60, None),
     ],
 )
 def test_skill_name(identity: str, expected: str | None) -> None:
     assert ident.skill_name(identity) == expected
+
+
+# tools/skill_linter.py in Hermes reports any other name as a ``name-format`` error, and
+# tools/skill_manager_tool.py refuses names over MAX_NAME_LENGTH (64).
+HERMES_LINTED_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
+
+
+@pytest.mark.parametrize("identity", ["a2f0/a2f0.net", "a2f0/.github", "A2F0/Some.Repo_x", "a.b-c/d.e"])
+def test_repo_skill_names_pass_hermess_skill_linter(identity: str, hermes_home: Path) -> None:
+    name, _ = ident.repo_skill(identity)
+    assert name and HERMES_LINTED_NAME_RE.fullmatch(name) and len(name) <= 64
+    taken = hermes_home / "skills" / "repos" / name / "SKILL.md"
+    taken.parent.mkdir(parents=True)
+    taken.write_text("Use when working in a clone of someone/else.")
+    alternate, _ = ident.repo_skill(identity)
+    assert alternate and alternate != name and HERMES_LINTED_NAME_RE.fullmatch(alternate)
+
+
+def test_dotted_skill_from_before_0_2_still_counts(hermes_home: Path) -> None:
+    legacy = hermes_home / "skills" / "repos" / "a2f0-a2f0.net" / "SKILL.md"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("Use when working in a clone of a2f0/a2f0.net.")
+    assert ident.repo_skill("a2f0/a2f0.net") == ("a2f0-a2f0.net", legacy)
+    renamed = hermes_home / "skills" / "repos" / "a2f0-a2f0-net" / "SKILL.md"
+    renamed.parent.mkdir(parents=True)
+    renamed.write_text("Use when working in a clone of a2f0/a2f0.net.")
+    assert ident.repo_skill("a2f0/a2f0.net") == ("a2f0-a2f0-net", renamed)
+
+
+def test_dotted_skill_naming_another_repository_is_ignored(hermes_home: Path) -> None:
+    legacy = hermes_home / "skills" / "repos" / "a2f0-a2f0.net" / "SKILL.md"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("Use when working in a clone of someone/else.")
+    assert ident.repo_skill("a2f0/a2f0.net") == ("a2f0-a2f0-net", None)
+
+
+def test_dot_and_hyphen_variants_of_a_name_do_not_share_a_skill(hermes_home: Path) -> None:
+    hyphen = hermes_home / "skills" / "repos" / "a2f0-a2f0-net" / "SKILL.md"
+    hyphen.parent.mkdir(parents=True)
+    hyphen.write_text("Use when working in a clone of a2f0/a2f0-net.")
+    assert ident.repo_skill("a2f0/a2f0-net") == ("a2f0-a2f0-net", hyphen)
+    assert ident.repo_skill("a2f0/a2f0.net") == ("a2f0--a2f0-net", None)
 
 
 def test_section_is_empty_outside_a_checkout(tmp_path: Path) -> None:
@@ -170,6 +217,5 @@ def test_parse_remote_url_forms(url: str, identity: str) -> None:
 
 def test_dot_github_repositories_are_valid() -> None:
     assert ident.parse_remote("git@github.com:a2f0/.github.git") == "a2f0/.github"
-    assert ident.skill_name("a2f0/.github") == "a2f0-.github"
     assert not ident.valid_identity("a2f0/..")
     assert not ident.valid_identity("a2f0/.")

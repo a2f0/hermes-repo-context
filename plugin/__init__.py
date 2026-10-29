@@ -3,7 +3,7 @@
 At session start the plugin resolves the working directory's checkout to its
 GitHub remote (``owner/repo``; other hosts get nothing) and adds a
 short, cache-safe system prompt section naming that identity and its repo skill
-(``<owner>-<repo>``), so every clone of a repository points the agent at the same
+(``<owner>-<repo>``, dots as hyphens), so every clone of a repository points the agent at the same
 lessons. ``hermes repo-context`` adds the sync, show, and claude-memory commands.
 """
 

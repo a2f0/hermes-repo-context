@@ -28,7 +28,11 @@ section in their system prompt.
   create it in the `repos` category when a repository-specific lesson appears,
   and keep memory for facts that hold in every repository. A skill counts only
   when it names its `owner/repo`; if another repository already holds the flat
-  name (`a-b/c` and `a/b-c`), the plugin uses `<owner>--<repo>`. The section is
+  name (`a-b/c` and `a/b-c`), the plugin uses `<owner>--<repo>`. Names are
+  lowercase and turn dots into hyphens (`a2f0/a2f0.net` is `a2f0-a2f0-net`), as
+  Hermes's skill linter requires; a skill created before 0.2.0 under the dotted
+  name still counts, and renaming it (directory and frontmatter `name`) to the
+  new name is safe. The section is
   rendered once per session, so it never breaks prompt caching, and is empty
   outside a checkout with a remote.
 - **`hermes repo-context sync`** scans the clones under `~/github` (repeat
