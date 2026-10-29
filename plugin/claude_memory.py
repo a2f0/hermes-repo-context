@@ -106,7 +106,10 @@ def _sections(lines: list[str]) -> list[tuple[str | None, list[str]]]:
 
 
 def _unit_key(unit: str) -> str:
-    return "\n".join(part.strip() for part in unit.split("\n")).strip()
+    """A line compares without surrounding space; a fenced block keeps its indentation."""
+    if "\n" in unit:
+        return "\n".join(part.rstrip() for part in unit.split("\n"))
+    return unit.strip()
 
 
 def merge_index(current: list[str], incoming: list[str]) -> tuple[list[str], int]:
@@ -548,6 +551,35 @@ def _unredirect(g: GroupPlan, clone: Path, path: Path, target: str) -> None:
             g.redirected.discard(clone)
 
 
+def live_claude_dirs() -> set[Path] | None:
+    """Working directories of running Claude Code processes, or None when lsof cannot tell."""
+    try:
+        out = subprocess.run(
+            ["lsof", "-a", "-d", "cwd", "-c", "claude", "-Fn"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode not in (0, 1):  # 1: no such process
+        return None
+    return {Path(line[1:]).resolve() for line in out.stdout.splitlines() if line.startswith("n")}
+
+
+def busy_clones(plans: list[GroupPlan], live: set[Path]) -> list[Path]:
+    """Clones in *plans* that a running Claude Code session works in (its cwd at or below them).
+    Claude Code does not lock its memory files, so ``apply`` needs those sessions closed."""
+    busy = set()
+    for g in plans:
+        for clone in g.clone_sources:
+            real = clone.resolve()
+            if any(d == real or real in d.parents for d in live):
+                busy.add(clone)
+    return sorted(busy)
+
+
 def _has_files(path: Path) -> bool:
     return path.is_symlink() or (path.is_dir() and any(path.iterdir()))
 
@@ -601,6 +633,13 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
                 _redirect(g, clone, path, data[SETTING])
                 if clone in g.redirected:
                     redirected_now[clone] = (path, data[SETTING])
+        # Memory a session created while the settings were being written was never planned.
+        for clone, (path, target) in list(redirected_now.items()):
+            own = g.clone_sources.get(clone)
+            if own is not None and own not in planned and _has_files(own):
+                g.keep(own, "memory appeared while redirecting; re-run to merge it")
+                _unredirect(g, clone, path, target)
+                del redirected_now[clone]
         for src in g.archivable():
             if src.clone is not None and (read_settings(src.clone / SETTINGS_FILE)[0] or {}).get(SETTING) != g.target:
                 g.keep(src.path, "its clone no longer reads the shared directory")

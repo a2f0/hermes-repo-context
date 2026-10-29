@@ -39,6 +39,11 @@ def setup(parser: argparse.ArgumentParser) -> None:
     c = subs.add_parser("claude-memory", help="share Claude Code auto memory per remote (dry run unless --apply)")
     c.add_argument("--apply", action="store_true", help="merge memory and write settings")
     c.add_argument(
+        "--allow-running",
+        action="store_true",
+        help="apply even while Claude Code runs in an affected clone (its writes can race the merge)",
+    )
+    c.add_argument(
         "--alias",
         action="append",
         default=[],
@@ -145,6 +150,19 @@ def run_claude_memory(args: argparse.Namespace) -> int:
         for _clone, path, data, note in g.settings:
             if data is None:
                 print(f"    {claude_memory.display(path, home)}: {note}")
+    if args.apply and not args.allow_running:
+        live = claude_memory.live_claude_dirs()
+        if live is None:
+            print("\nCannot tell whether Claude Code is running (lsof failed). Close its sessions in")
+            print("these clones, then re-run with --allow-running.")
+            return 1
+        busy = claude_memory.busy_clones(plans, live)
+        if busy:
+            print("\nClaude Code is running in these clones and could write memory during the merge:")
+            for clone in busy:
+                print(f"  {claude_memory.display(clone, home)}")
+            print("Close those sessions and re-run, or pass --allow-running.")
+            return 1
     if args.apply:
         claude_memory.apply(plans)
     for g in plans:

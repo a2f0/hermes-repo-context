@@ -558,3 +558,52 @@ def test_index_written_by_a_session_during_apply_is_merged_not_lost(env: dict[st
     index = (plans[0].dest / "MEMORY.md").read_text().splitlines()
     assert index[0] == "- [S](s.md) — written by a running session"
     assert "- [B](b.md) — b" in index
+
+
+def test_fenced_blocks_differing_in_indentation_are_distinct() -> None:
+    current = ["```", "  a", "```"]
+    incoming = ["```", "a", "```"]
+    assert cm.merge_index(current, incoming)[1] == 3
+
+
+def test_memory_created_while_redirecting_undoes_the_redirect(env: dict[str, Path], monkeypatch) -> None:
+    import shutil
+
+    shutil.rmtree(source(env, "two"))
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    real = cm._redirect
+
+    def redirect_then_session_writes(g, clone, path, target):
+        real(g, clone, path, target)
+        if clone == env["two"]:
+            source(env, "two").mkdir()
+            (source(env, "two") / "new.md").write_text("new")
+
+    monkeypatch.setattr(cm, "_redirect", redirect_then_session_writes)
+    cm.apply(plans, today="2026-10-29")
+    assert (source(env, "two") / "new.md").is_file()
+    assert "autoMemoryDirectory" not in json.loads((env["two"] / ".claude" / "settings.local.json").read_text())
+
+
+def test_busy_clones(env: dict[str, Path]) -> None:
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    assert cm.busy_clones(plans, {(env["two"] / "src").resolve()}) == [env["two"]]
+    assert cm.busy_clones(plans, {env["home"].resolve()}) == []
+
+
+def test_apply_refuses_while_claude_runs_in_a_clone(env: dict[str, Path], monkeypatch, capsys) -> None:
+    import argparse
+
+    from repo_context import cli
+    from repo_context import identity as ident
+
+    ident.cache_path().write_text(json.dumps({"checkouts": checkouts(env)}))
+    monkeypatch.setattr(cli.Path, "home", staticmethod(lambda: env["home"]))
+    monkeypatch.setattr(cm, "live_claude_dirs", lambda: {env["one"].resolve()})
+    parser = argparse.ArgumentParser()
+    cli.setup(parser)
+    assert cli.main(parser.parse_args(["claude-memory", "--apply"])) == 1
+    assert "Claude Code is running in these clones" in capsys.readouterr().out
+    assert source(env, "one").is_dir() and source(env, "two").is_dir()
+    assert cli.main(parser.parse_args(["claude-memory", "--apply", "--allow-running"])) == 0
+    assert not source(env, "one").exists()
