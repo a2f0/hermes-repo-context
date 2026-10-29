@@ -26,7 +26,7 @@ from datetime import date
 from pathlib import Path, PurePosixPath
 
 from .identity import atomic_write as _atomic_write
-from .identity import git_env, identity_key, remote_url
+from .identity import git_env, remote_url
 
 INDEX = "MEMORY.md"
 INDEX_MAX_LINES, INDEX_MAX_BYTES = 200, 25_000
@@ -59,15 +59,16 @@ def memory_subpath(identity: str) -> PurePosixPath | None:
     """``a2f0/matrix`` -> ``a2f0/matrix``: one directory level per identity segment, so two
     repositories never share a directory. None when a segment is not a safe directory name.
 
-    GitHub names are case-insensitive and are lowercased. Other hosts may be case-sensitive,
-    and a case-insensitive filesystem would merge ``App`` and ``app``, so a mixed-case name
-    there gets a short hash of the exact identity appended to its last segment."""
+    GitHub names (``owner/repo``) are case-insensitive and are lowercased. Other hosts may be
+    case-sensitive while the filesystem is not, so their last segment always carries a short
+    hash of the exact identity: ``App`` and ``app`` differ, and no repository can be named
+    after another's hashed directory, because its own name gets its own hash."""
     parts = identity.split("/")
     if len(parts) < 2 or not all(_SEGMENT_RE.match(p) and p not in (".", "..") for p in parts):
         return None
     lower = [p.lower() for p in parts]
-    if identity_key(identity) == identity and "/".join(lower) != identity:
-        lower[-1] = f"{lower[-1]}-{hashlib.sha1(identity.encode()).hexdigest()[:8]}"
+    if len(parts) > 2:  # host/group.../repo: not GitHub
+        lower[-1] = f"{lower[-1]}-{hashlib.sha256(identity.encode()).hexdigest()[:12]}"
     return PurePosixPath(*lower)
 
 
@@ -128,6 +129,7 @@ class GroupPlan:
     sources: list[Source] = field(default_factory=list)
     copies: list[tuple[Path, Path, PurePosixPath]] = field(default_factory=list)  # (source dir, file, rel)
     providers: dict[PurePosixPath, list[Path]] = field(default_factory=dict)  # rel -> sources holding it
+    digests: dict[PurePosixPath, str] = field(default_factory=dict)  # rel -> planned content hash
     conflicts: list[Path] = field(default_factory=list)
     skipped: list[Path] = field(default_factory=list)
     index_before: int = 0
@@ -218,6 +220,7 @@ def _plan_files(g: GroupPlan) -> None:
                 g.copies.append((src.path, f, rel))
                 g.providers[rel] = [src.path]
                 existing[rel] = f.read_bytes()
+                g.digests[rel] = hashlib.sha256(existing[rel]).hexdigest()
 
 
 def _plan_settings(g: GroupPlan, clones: list[Path], target: str, unclean: set[Path]) -> None:
@@ -400,6 +403,9 @@ def _copy(g: GroupPlan, src_dir: Path, f: Path, rel: PurePosixPath) -> None:
         return
     target = g.dest / rel
     content = f.read_bytes()
+    if hashlib.sha256(content).hexdigest() != g.digests.get(rel):
+        failed("the source file changed since planning")
+        return
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         with open(target, "xb") as out:  # never overwrite a file written since planning

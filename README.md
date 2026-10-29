@@ -44,8 +44,8 @@ section in their system prompt.
   `--trust owner/repo` covers another repository's clones too.
 - **`hermes repo-context claude-memory`** shares Claude Code auto memory per
   remote. It merges each clone's `~/.claude/projects/<path>/memory` into
-  `~/.claude/repo-memory/<owner>/<repo>` (lowercased for GitHub; a mixed-case
-  name on another host gets a short hash suffix, since those hosts may be
+  `~/.claude/repo-memory/<owner>/<repo>` (lowercased for GitHub; a repository
+  on another host gets a short hash suffix, since those hosts may be
   case-sensitive), sets `autoMemoryDirectory` in each
   clone's `.claude/settings.local.json` (only where Git ignores that file), and
   then renames each merged source to `memory.merged-<date>`. A source stays in
