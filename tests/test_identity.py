@@ -80,6 +80,17 @@ def test_dotted_skill_from_before_0_2_still_counts(hermes_home: Path) -> None:
     assert ident.repo_skill("a2f0/a2f0.net") == ("a2f0-a2f0-net", renamed)
 
 
+def test_dotted_double_dash_skill_from_before_0_2_still_counts(hermes_home: Path) -> None:
+    other = hermes_home / "skills" / "repos" / "a-b-c.d" / "SKILL.md"
+    other.parent.mkdir(parents=True)
+    other.write_text("Use when working in a clone of a-b/c.d.")
+    legacy = hermes_home / "skills" / "repos" / "a--b-c.d" / "SKILL.md"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("Use when working in a clone of a/b-c.d.")
+    assert ident.repo_skill("a/b-c.d") == ("a--b-c.d", legacy)
+    assert ident.repo_skill("a-b/c.d") == ("a-b-c.d", other)
+
+
 def test_dotted_skill_naming_another_repository_is_ignored(hermes_home: Path) -> None:
     legacy = hermes_home / "skills" / "repos" / "a2f0-a2f0.net" / "SKILL.md"
     legacy.parent.mkdir(parents=True)

@@ -207,19 +207,20 @@ def repo_skill(identity: str) -> tuple[str | None, Path | None]:
 
     The flat ``owner-repo`` name can collide (``a-b/c`` and ``a/b-c``, or ``a/b.c`` and
     ``a/b-c``), so an existing skill counts only when its SKILL.md names *identity*; otherwise the
-    ``owner--repo`` name is used. A skill under the name from before dots became hyphens
-    (``a2f0-a2f0.net``) still counts when it names *identity*.
+    ``owner--repo`` name is used. A skill under either name from before dots became hyphens
+    (``a2f0-a2f0.net``, ``a2f0--a2f0.net``) still counts when it names *identity*.
     """
     name = skill_name(identity)
     if name is None:
         return None, None
-    legacy = identity.lower().replace("/", "-")
     alternate = _flat_skill_name(identity, "--")
     candidates = [name]
-    if legacy != name and _LEGACY_SKILL_NAME_RE.match(legacy):
-        candidates.append(legacy)
     if _valid_skill_name(alternate):
         candidates.append(alternate)
+    for separator in ("-", "--"):
+        legacy = identity.lower().replace("/", separator)
+        if legacy not in candidates and _LEGACY_SKILL_NAME_RE.match(legacy):
+            candidates.append(legacy)
     found: dict[str, Path | None] = {}
     for candidate in candidates:
         found[candidate] = path = find_skill(candidate)
