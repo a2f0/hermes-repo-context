@@ -450,3 +450,53 @@ def test_alias_with_a_leading_dash_parses_when_attached() -> None:
     cli.setup(parser)
     args = parser.parse_args(["claude-memory", "--alias=-Users-me-github-old=me/new"])
     assert args.alias == ["-Users-me-github-old=me/new"]
+
+
+def test_merge_index_keeps_entries_under_their_headings() -> None:
+    current = ["# Memory Index", "", "## Project", "- [P](p.md) — p", "", "## Feedback", "- [F](f.md) — f"]
+    incoming = [
+        "# Memory Index",
+        "- [T](t.md) — top",
+        "## Feedback",
+        "- [G](g.md) — g",
+        "## Reference",
+        "- [R](r.md) — r",
+    ]
+    merged, added = cm.merge_index(current, incoming)
+    assert merged == [
+        "# Memory Index",
+        "- [T](t.md) — top",
+        "",
+        "## Project",
+        "- [P](p.md) — p",
+        "",
+        "## Feedback",
+        "- [F](f.md) — f",
+        "- [G](g.md) — g",
+        "",
+        "## Reference",
+        "- [R](r.md) — r",
+    ]
+    assert added == 4
+    assert cm.merge_index(merged, incoming) == (merged, 0)
+
+
+def test_index_entries_for_conflicting_files_stay_with_their_source(env: dict[str, Path]) -> None:
+    dest = env["claude"] / "repo-memory" / "a2f0" / "demo"
+    dest.mkdir(parents=True)
+    (dest / "b.md").write_text("another clone's b")
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    assert "- [B](b.md) — b" not in plans[0].index
+    cm.apply(plans, today="2026-10-29")
+    assert "b.md" not in (dest / "MEMORY.md").read_text()
+    assert (source(env, "two") / "MEMORY.md").is_file()
+
+
+def test_index_entries_for_copies_failing_at_apply_stay_behind(env: dict[str, Path]) -> None:
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    dest = env["claude"] / "repo-memory" / "a2f0" / "demo"
+    dest.mkdir(parents=True)
+    (dest / "b.md").write_text("written since planning")
+    cm.apply(plans, today="2026-10-29")
+    index = (dest / "MEMORY.md").read_text()
+    assert "a.md" in index and "b.md" not in index

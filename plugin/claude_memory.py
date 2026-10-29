@@ -76,17 +76,62 @@ def display(path: Path, home: Path) -> str:
     return "~/" + str(path.relative_to(home)) if path.is_relative_to(home) else str(path)
 
 
-def new_index_lines(existing: list[str], incoming: list[str]) -> list[str]:
-    """Lines of *incoming* not already in *existing*; headings only when *existing* is empty."""
-    seen = {line.strip() for line in existing if line.strip()}
-    added = []
-    for line in incoming:
-        text = line.strip()
-        if not text or text in seen or (text.startswith("#") and existing):
+_SECTION_RE = re.compile(r"^#{2,6}\s")
+_LINK_RE = re.compile(r"\]\(([^)\s]+)\)")
+
+
+def _sections(lines: list[str]) -> list[tuple[str | None, list[str]]]:
+    """An index split at its ``##``-and-deeper headings; ``None`` holds what precedes the first.
+    A ``#`` title is ordinary text, so every index's title section lines up."""
+    sections: list[tuple[str | None, list[str]]] = [(None, [])]
+    for line in lines:
+        if _SECTION_RE.match(line):
+            sections.append((line.rstrip(), []))
+        else:
+            sections[-1][1].append(line.rstrip("\n"))
+    return sections
+
+
+def merge_index(current: list[str], incoming: list[str]) -> tuple[list[str], int]:
+    """*current* with the entries of *incoming* it lacks, each under the heading it had in
+    *incoming* (a heading *current* lacks is appended with its entries), and how many lines that
+    added. Existing lines keep their order and formatting."""
+    sections = _sections(current)
+    present = {line.strip() for line in current if line.strip()}
+    added = 0
+    for heading, lines in _sections(incoming):
+        new = []
+        for line in lines:
+            text = line.strip()
+            if text and text not in present:
+                present.add(text)
+                new.append(line)
+        if not new:
             continue
-        seen.add(text)
-        added.append(line.rstrip("\n"))
-    return added
+        added += len(new)
+        body = next((b for h, b in sections if h == heading), None)
+        if body is None:
+            last = sections[-1][1]
+            if last and last[-1].strip():
+                last.append("")
+            sections.append((heading, new))
+            added += 1
+            continue
+        end = len(body)
+        while end and not body[end - 1].strip():
+            end -= 1
+        body[end:end] = new
+    out: list[str] = []
+    for heading, body in sections:
+        if heading is not None:
+            out.append(heading)
+        out.extend(body)
+    return out, added
+
+
+def link_targets(line: str) -> set[PurePosixPath]:
+    """Relative files an index line links to."""
+    return {PurePosixPath(m) for m in _LINK_RE.findall(line) if "://" not in m and not m.startswith("/")}
 
 
 def symlink_under(dest: Path, rel: PurePosixPath) -> bool:
@@ -132,6 +177,7 @@ class GroupPlan:
     digests: dict[PurePosixPath, str] = field(default_factory=dict)  # rel -> planned content hash
     clone_sources: dict[Path, Path] = field(default_factory=dict)  # clone -> its memory directory
     target: str = ""  # the autoMemoryDirectory value that points at dest
+    failed_rels: set[PurePosixPath] = field(default_factory=set)  # copies that failed at apply time
     conflicts: list[Path] = field(default_factory=list)
     skipped: list[Path] = field(default_factory=list)
     index_before: int = 0
@@ -195,26 +241,34 @@ def _plan_files(g: GroupPlan) -> None:
         for f in g.dest.rglob("*"):
             if f.is_file() and not f.is_symlink():
                 existing[PurePosixPath(f.relative_to(g.dest).as_posix())] = f.read_bytes()
+    index_rel = PurePosixPath(INDEX)
     for src in g.sources:
+        unmerged: set[PurePosixPath] = set()  # files of this source that stay behind
+
+        def conflict(
+            f: Path, rel: PurePosixPath, reason: str, src: Source = src, unmerged: set[PurePosixPath] = unmerged
+        ) -> None:
+            g.conflicts.append(f)
+            g.keep(src.path, reason)
+            unmerged.add(rel)
+
+        index_file = None
         for f in sorted(src.path.rglob("*")):
+            rel = PurePosixPath(f.relative_to(src.path).as_posix())
             if f.is_symlink() or not (f.is_file() or f.is_dir()):
                 g.skipped.append(f)
                 g.keep(src.path, "holds a symlink or special file")
+                unmerged.add(rel)
+            elif f.is_dir():
                 continue
-            if f.is_dir():
-                continue
-            rel = PurePosixPath(f.relative_to(src.path).as_posix())
-            if symlink_under(g.dest, rel):
-                g.conflicts.append(f)
-                g.keep(src.path, "the shared copy is behind a symlink")
+            elif symlink_under(g.dest, rel):
+                conflict(f, rel, "the shared copy is behind a symlink")
             elif rel not in existing and (_clashes(rel, existing.keys()) or (g.dest / rel).is_dir()):
-                g.conflicts.append(f)
-                g.keep(src.path, "a file and a directory share a name")
-            elif rel == PurePosixPath(INDEX):
-                g.index += new_index_lines(g.index, f.read_text().splitlines())
+                conflict(f, rel, "a file and a directory share a name")
+            elif rel == index_rel:
+                index_file = f
             elif rel in existing and existing[rel] != f.read_bytes():
-                g.conflicts.append(f)
-                g.keep(src.path, "a file differs from the shared copy")
+                conflict(f, rel, "a file differs from the shared copy")
             elif rel in g.providers:
                 # Identical to a copy another source provides: this source depends on it too.
                 g.providers[rel].append(src.path)
@@ -223,6 +277,10 @@ def _plan_files(g: GroupPlan) -> None:
                 g.providers[rel] = [src.path]
                 existing[rel] = f.read_bytes()
                 g.digests[rel] = hashlib.sha256(existing[rel]).hexdigest()
+        if index_file is not None:
+            # An entry for a file that stays behind stays behind with it.
+            lines = [line for line in index_file.read_text().splitlines() if not (link_targets(line) & unmerged)]
+            g.index, _ = merge_index(g.index, lines)
 
 
 def _plan_settings(g: GroupPlan, clones: list[Path], target: str, unclean: set[Path]) -> None:
@@ -361,9 +419,11 @@ def _write_index(g: GroupPlan) -> None:
     session added since planning survive."""
     index = g.dest / INDEX
     current = index.read_text().splitlines() if index.is_file() else []
-    added = new_index_lines(current, g.index)
+    # Entries for copies that failed at apply time stay behind with their source.
+    planned = [line for line in g.index if not (link_targets(line) & g.failed_rels)]
+    merged, added = merge_index(current, planned)
     if added:
-        _atomic_write(index, "\n".join(current + added) + "\n")
+        _atomic_write(index, "\n".join(merged) + "\n")
 
 
 def _keep_clone(g: GroupPlan, clone: Path, reason: str) -> None:
@@ -396,6 +456,7 @@ def _copy(g: GroupPlan, src_dir: Path, f: Path, rel: PurePosixPath) -> None:
     def failed(reason: str) -> None:
         # Every source holding an identical copy relied on this one, so none of them merged.
         g.conflicts.append(f)
+        g.failed_rels.add(rel)
         for provider in g.providers.get(rel, [src_dir]):
             g.keep(provider, reason)
 
@@ -447,7 +508,7 @@ def _merged(g: GroupPlan, source: Path) -> bool:
             continue
         rel = PurePosixPath(f.relative_to(source).as_posix())
         if rel == PurePosixPath(INDEX):
-            if new_index_lines(current, f.read_text().splitlines()):
+            if merge_index(current, f.read_text().splitlines())[1]:
                 return False
             continue
         target = g.dest / rel
