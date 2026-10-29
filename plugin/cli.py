@@ -125,7 +125,7 @@ def run_claude_memory(args: argparse.Namespace) -> int:
     try:
         plans = claude_memory.plan(checkouts, claude_home=home / ".claude", home=home, aliases=aliases, only=args.only)
     except ValueError as exc:
-        print(f"Invalid --only: {exc}.")
+        print(f"Invalid argument: {exc}.")
         return 2
     print(f"{'APPLY' if args.apply else 'DRY RUN'}: shared memory under ~/.claude/repo-memory\n")
     for g in plans:

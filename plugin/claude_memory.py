@@ -70,6 +70,8 @@ def display(path: Path, home: Path) -> str:
     return "~/" + str(path.relative_to(home)) if path.is_relative_to(home) else str(path)
 
 
+# Claude Code's project directory names: path_key() output, which only ever starts with "-".
+_PROJECT_KEY_RE = re.compile(r"^-[A-Za-z0-9-]*$")
 _SECTION_RE = re.compile(r"^#{2,6}\s")
 _LINK_RE = re.compile(r"\]\(([^)\s]+)\)")
 
@@ -184,6 +186,11 @@ def merge_index(current: list[str], incoming: list[str]) -> tuple[list[str], int
         for unit in body:
             out.extend(unit.split("\n"))
     return out, added
+
+
+def links_into(line: str, held: set[PurePosixPath]) -> bool:
+    """Whether *line* links to a file in *held* or beneath a directory in it."""
+    return any(t == h or h in t.parents for t in link_targets(line) for h in held)
 
 
 def link_targets(line: str) -> set[PurePosixPath]:
@@ -358,7 +365,7 @@ def _plan_files(g: GroupPlan) -> None:
                 g.digests[rel] = hashlib.sha256(existing[rel]).hexdigest()
         if index_file is not None:
             # An entry for a file that stays behind stays behind with it.
-            lines = [line for line in index_file.read_text().splitlines() if not (link_targets(line) & unmerged)]
+            lines = [line for line in index_file.read_text().splitlines() if not links_into(line, unmerged)]
             g.index, _ = merge_index(g.index, lines)
 
 
@@ -434,6 +441,9 @@ def plan(
     # Live clones first, so their index lines lead the merged MEMORY.md; then aliases. An alias
     # names the owner of a memory directory explicitly, so it claims that directory from any
     # checkout that maps to it; the checkout itself can still be redirected.
+    for key in aliases or {}:
+        if not _PROJECT_KEY_RE.match(key):
+            raise ValueError(f"invalid project key {key!r}; expected a name from ~/.claude/projects")
     alias_keys = set(aliases or {})
     claimants: dict[Path, list[Path]] = {}  # aliased memory directory -> clones that map to it
     entries = []
@@ -557,7 +567,7 @@ def _write_index(g: GroupPlan) -> None:
     session writes it meanwhile; if it keeps changing, the sources stay in place (``_merged``)."""
     index = g.dest / INDEX
     # Entries for copies that failed at apply time stay behind with their source.
-    planned = [line for line in g.index if not (link_targets(line) & g.failed_rels)]
+    planned = [line for line in g.index if not links_into(line, g.failed_rels)]
     for _attempt in range(5):
         before = index.read_bytes() if index.is_file() else None
         current = before.decode(errors="replace").splitlines() if before is not None else []

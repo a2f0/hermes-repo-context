@@ -698,3 +698,22 @@ def test_busy_check_survives_only_filtering_an_aliased_clone(env: dict[str, Path
     )
     assert [g.identity for g in plans] == ["a2f0/old"]
     assert cm.busy_clones(plans, {env["two"].resolve()}) == [env["two"]]
+
+
+@pytest.mark.parametrize("key", ["/etc", "../x", "-a/../../b", "a", "-a b", ""])
+def test_alias_keys_must_be_project_keys(env: dict[str, Path], key: str) -> None:
+    with pytest.raises(ValueError, match="invalid project key"):
+        cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"], aliases={key: "a2f0/old"})
+
+
+def test_links_beneath_a_skipped_directory_stay_behind(env: dict[str, Path], tmp_path: Path) -> None:
+    import shutil
+
+    shutil.rmtree(source(env, "two") / "notes")
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "elsewhere" / "topic.md").write_text("t")
+    (source(env, "two") / "notes").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    (source(env, "two") / "MEMORY.md").write_text("- [B](b.md) — b\n- [T](notes/topic.md#x) — t\n")
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    assert "- [T](notes/topic.md#x) — t" not in plans[0].index
+    assert "- [B](b.md) — b" in plans[0].index
