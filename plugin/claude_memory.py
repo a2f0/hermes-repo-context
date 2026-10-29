@@ -248,6 +248,7 @@ class GroupPlan:
     target: str = ""  # the autoMemoryDirectory value that points at dest
     clones: list[Path] = field(default_factory=list)  # every clone of this repository
     watch: set[Path] = field(default_factory=set)  # other clones whose memory directory is a source
+    claims: dict[Path, Path] = field(default_factory=dict)  # clone -> its memory dir an alias claims
     failed_rels: set[PurePosixPath] = field(default_factory=set)  # copies that failed at apply time
     conflicts: list[Path] = field(default_factory=list)
     skipped: list[Path] = field(default_factory=list)
@@ -438,6 +439,7 @@ def plan(
     clones: dict[PurePosixPath, list[Path]] = {}
     sources: dict[PurePosixPath, list[Source]] = {}
     stale: dict[PurePosixPath, list[tuple[Path, str]]] = {}
+    claims: dict[PurePosixPath, dict[Path, Path]] = {}
     # Live clones first, so their index lines lead the merged MEMORY.md; then aliases. An alias
     # names the owner of a memory directory explicitly, so it claims that directory from any
     # checkout that maps to it; the checkout itself can still be redirected.
@@ -480,6 +482,7 @@ def plan(
             continue
         if claimed:
             clones[sub].append(src.clone)
+            claims.setdefault(sub, {})[src.clone] = src.path
             continue
         if users[src.path] > 1:
             stale.setdefault(sub, []).append(
@@ -514,6 +517,7 @@ def plan(
         g.target = display(dest, home)
         g.clones = list(clones[sub])
         g.watch = {c for s in sources[sub] for c in claimants.get(s.path, [])}
+        g.claims = dict(claims.get(sub, {}))
         for path, reason in stale.get(sub, []):
             g.keep(path, reason)
         # A clone whose memory directory is a symlink is not merged, so it must not be redirected.
@@ -706,7 +710,9 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
     """Copy, redirect, then archive: a source is renamed only once its clone reads the shared
     directory, so Claude Code never loses sight of a memory it was using."""
     stamp = today or date.today().isoformat()
-    for g in plans:
+    # Aliased memory first, so a clone whose old directory an alias claims can be redirected
+    # once that directory is merged and archived.
+    for g in sorted(plans, key=lambda g: not g.watch):
         if g.blocked or _dest_problem(g.root, g.dest):
             continue
         g.dest.mkdir(parents=True, exist_ok=True)
@@ -723,6 +729,11 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
         planned = {s.path for s in g.sources}
         redirected_now: dict[Path, tuple[Path, str]] = {}
         for clone, path, data in g.settings_changes:
+            claimed = g.claims.get(clone)
+            if claimed is not None and (claimed.exists() or claimed.is_symlink()):
+                # Its old memory belongs to an alias that has not merged it; keep reading it.
+                g.keep(claimed, "its alias has not merged it yet; re-run")
+                continue
             own = g.clone_sources.get(clone)
             if own is not None and own not in planned and _has_files(own):
                 g.keep(own, "memory appeared since planning; re-run to merge it")

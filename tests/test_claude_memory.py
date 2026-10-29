@@ -717,3 +717,20 @@ def test_links_beneath_a_skipped_directory_stay_behind(env: dict[str, Path], tmp
     plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
     assert "- [T](notes/topic.md#x) — t" not in plans[0].index
     assert "- [B](b.md) — b" in plans[0].index
+
+
+def test_claimant_waits_for_its_aliased_memory_to_merge(env: dict[str, Path]) -> None:
+    key = cm.path_key(str(env["two"]))
+    old_dest = env["claude"] / "repo-memory" / "a2f0" / "old"
+    old_dest.mkdir(parents=True)
+    (old_dest / "b.md").write_text("old repository's different b")
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"], aliases={key: "a2f0/old"})
+    cm.apply(plans, today="2026-10-29")
+    assert (source(env, "two") / "b.md").read_text() == "b"
+    assert not (env["two"] / ".claude" / "settings.local.json").exists()
+    (old_dest / "b.md").write_text("b")
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"], aliases={key: "a2f0/old"})
+    cm.apply(plans, today="2026-10-29")
+    assert not source(env, "two").exists()
+    two = json.loads((env["two"] / ".claude" / "settings.local.json").read_text())
+    assert two["autoMemoryDirectory"] == SHARED
