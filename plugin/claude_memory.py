@@ -130,6 +130,7 @@ class GroupPlan:
     copies: list[tuple[Path, Path, PurePosixPath]] = field(default_factory=list)  # (source dir, file, rel)
     providers: dict[PurePosixPath, list[Path]] = field(default_factory=dict)  # rel -> sources holding it
     digests: dict[PurePosixPath, str] = field(default_factory=dict)  # rel -> planned content hash
+    clone_sources: dict[Path, Path] = field(default_factory=dict)  # clone -> its memory directory
     conflicts: list[Path] = field(default_factory=list)
     skipped: list[Path] = field(default_factory=list)
     index_before: int = 0
@@ -323,6 +324,7 @@ def plan(
         g.sources = [s for s in sources[sub] if _is_mergeable(s.path, dest)]
         for s in g.sources:
             s.fingerprint = fingerprint(s.path)
+        g.clone_sources = {s.clone: s.path for s in sources[sub] if s.clone is not None}
         for path, reason in stale.get(sub, []):
             g.keep(path, reason)
         # A clone whose memory directory is a symlink is not merged, so it must not be redirected.
@@ -430,6 +432,30 @@ def _unredirect(g: GroupPlan, clone: Path, path: Path, target: str) -> None:
             g.redirected.discard(clone)
 
 
+def _has_files(path: Path) -> bool:
+    return path.is_symlink() or (path.is_dir() and any(path.iterdir()))
+
+
+def _merged(g: GroupPlan, source: Path) -> bool:
+    """Whether the shared directory holds every file of *source* unchanged and every line of its
+    index, so archiving it loses nothing; checked after copying, just before redirecting."""
+    current = (g.dest / INDEX).read_text().splitlines() if (g.dest / INDEX).is_file() else []
+    for f in source.rglob("*"):
+        if f.is_dir() and not f.is_symlink():
+            continue
+        rel = PurePosixPath(f.relative_to(source).as_posix())
+        if rel == PurePosixPath(INDEX):
+            if new_index_lines(current, f.read_text().splitlines()):
+                return False
+            continue
+        target = g.dest / rel
+        if f.is_symlink() or symlink_under(g.dest, rel) or not target.is_file():
+            return False
+        if target.read_bytes() != f.read_bytes():
+            return False
+    return True
+
+
 def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
     """Copy, redirect, then archive: a source is renamed only once its clone reads the shared
     directory, so Claude Code never loses sight of a memory it was using."""
@@ -442,10 +468,19 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
             _copy(g, src_dir, f, rel)
         _write_index(g)
         for s in g.sources:
-            if s.path not in g.kept_paths and s.changed():
+            if s.path in g.kept_paths:
+                continue
+            if s.changed():
                 g.keep(s.path, "changed since planning; re-run to merge it")
+            elif not _merged(g, s.path):
+                g.keep(s.path, "the shared directory does not hold all of it")
+        planned = {s.path for s in g.sources}
         redirected_now: dict[Path, tuple[Path, str]] = {}
         for clone, path, data in g.settings_changes:
+            own = g.clone_sources.get(clone)
+            if own is not None and own not in planned and _has_files(own):
+                g.keep(own, "memory appeared since planning; re-run to merge it")
+                continue
             if not any(s.clone == clone and s.path in g.kept_paths for s in g.sources):
                 _redirect(g, clone, path, data[SETTING])
                 if clone in g.redirected:

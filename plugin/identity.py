@@ -187,15 +187,17 @@ def repo_skill(identity: str) -> tuple[str | None, Path | None]:
     if name is None:
         return None, None
     found = find_skill(name)
-    if found is None or names_identity(found.read_text(errors="replace"), identity):
+    if found is not None and names_identity(found.read_text(errors="replace"), identity):
         return name, found
     alternate = identity.lower().replace("/", "--")
-    if not _SKILL_NAME_RE.match(alternate):
+    alt_found = find_skill(alternate) if _SKILL_NAME_RE.match(alternate) else None
+    if alt_found is not None and names_identity(alt_found.read_text(errors="replace"), identity):
+        return alternate, alt_found  # created while the flat name belonged to another repository
+    if found is None:
+        return name, None
+    if alt_found is not None or not _SKILL_NAME_RE.match(alternate):
         return None, None
-    found = find_skill(alternate)
-    if found is not None and not names_identity(found.read_text(errors="replace"), identity):
-        return None, None
-    return alternate, found
+    return alternate, None
 
 
 def matrix_workspace(root: Path) -> tuple[Path, str | None] | None:

@@ -400,3 +400,31 @@ def test_provider_changed_after_planning_keeps_every_dependent(env: dict[str, Pa
     for clone in ("one", "two"):
         assert (source(env, clone) / "same.md").is_file()
         assert "autoMemoryDirectory" not in cm.read_settings(env[clone] / ".claude" / "settings.local.json")[0]
+
+
+def test_memory_created_after_planning_blocks_the_redirect(env: dict[str, Path]) -> None:
+    import shutil
+
+    shutil.rmtree(source(env, "two"))
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    late = source(env, "two")
+    late.mkdir()
+    (late / "new.md").write_text("learned after planning")
+    cm.apply(plans, today="2026-10-29")
+    assert (late / "new.md").is_file()
+    assert not (env["two"] / ".claude" / "settings.local.json").exists()
+    one = json.loads((env["one"] / ".claude" / "settings.local.json").read_text())
+    assert one["autoMemoryDirectory"] == SHARED
+
+
+def test_shared_file_removed_after_planning_keeps_the_source(env: dict[str, Path]) -> None:
+    dest = env["claude"] / "repo-memory" / "a2f0" / "demo"
+    dest.mkdir(parents=True)
+    (dest / "a.md").write_text("a")
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    assert all(rel != PurePosixPath("a.md") for _, _, rel in plans[0].copies)
+    (dest / "a.md").unlink()
+    cm.apply(plans, today="2026-10-29")
+    assert (source(env, "one") / "a.md").is_file()
+    assert "autoMemoryDirectory" not in json.loads((env["one"] / ".claude" / "settings.local.json").read_text())
+    assert dict(plans[0].kept)[source(env, "one")] == "the shared directory does not hold all of it"

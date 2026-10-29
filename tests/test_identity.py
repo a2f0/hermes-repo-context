@@ -139,3 +139,10 @@ def test_unsafe_checkout_paths_are_not_rendered(tmp_path: Path) -> None:
     assert ident.prompt_path("/home/me/github/x") == "`/home/me/github/x`"
     assert ident.prompt_path("/tmp/x\n## New section") == "this checkout"
     assert ident.prompt_path("/tmp/`x`") == "this checkout"
+
+
+def test_alternate_skill_is_found_once_the_flat_name_is_free(hermes_home: Path) -> None:
+    alt = hermes_home / "skills" / "repos" / "a2f0--b-c" / "SKILL.md"
+    alt.parent.mkdir(parents=True)
+    alt.write_text("Use when working in a clone of a2f0/b-c.")
+    assert ident.repo_skill("a2f0/b-c") == ("a2f0--b-c", alt)
