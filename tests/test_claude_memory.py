@@ -607,3 +607,26 @@ def test_apply_refuses_while_claude_runs_in_a_clone(env: dict[str, Path], monkey
     assert source(env, "one").is_dir() and source(env, "two").is_dir()
     assert cli.main(parser.parse_args(["claude-memory", "--apply", "--allow-running"])) == 0
     assert not source(env, "one").exists()
+
+
+def test_path_that_held_another_repository_is_left_alone(env: dict[str, Path]) -> None:
+    found = checkouts(env)
+    found[str(env["two"])]["reused"] = True
+    plans = cm.plan(found, claude_home=env["claude"], home=env["home"])
+    assert dict(plans[0].kept)[source(env, "two")].startswith("this path has held another repository")
+    cm.apply(plans, today="2026-10-29")
+    assert (source(env, "two") / "b.md").is_file()
+    assert not (env["two"] / ".claude" / "settings.local.json").exists()
+
+
+def test_user_or_project_memory_setting_is_respected(env: dict[str, Path]) -> None:
+    (env["two"] / ".claude" / "settings.json").write_text(json.dumps({"autoMemoryDirectory": "~/team"}))
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    notes = {p: note for _clone, p, _data, note in plans[0].settings}
+    assert notes[env["two"] / ".claude" / "settings.local.json"].startswith("the project's settings set it")
+    assert source(env, "two") in plans[0].kept_paths
+    (env["claude"] / "settings.json").write_text(json.dumps({"autoMemoryDirectory": "~/mine"}))
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    assert plans[0].blocked.startswith("autoMemoryDirectory is set in the user settings")
+    cm.apply(plans, today="2026-10-29")
+    assert source(env, "one").is_dir()

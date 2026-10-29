@@ -136,3 +136,17 @@ def test_malformed_manifests_do_not_abort_sync(workspace: dict[str, Path], manif
     )
     assert "a2f0/matrix" in result.managed
     assert result.managed <= {"a2f0/matrix", "a2f0/balebase"}
+
+
+def test_reused_path_is_marked_but_a_rename_is_not(workspace: dict[str, Path]) -> None:
+    import subprocess
+
+    sync_mod.sync([workspace["root"]], trust_store=FakeTrust([]), canonical=FakeGitHub())
+    clone = str(workspace["unmanaged"])
+    subprocess.run(["git", "-C", clone, "remote", "set-url", "origin", "git@github.com:a2f0/another.git"], check=True)
+    result = sync_mod.sync([workspace["root"]], trust_store=FakeTrust([]), canonical=FakeGitHub())
+    assert result.checkouts[clone].get("reused") is True
+    # balebase's clone was cached as a2f0/stealth's URL, which resolves to a2f0/balebase: not reused.
+    assert "reused" not in result.checkouts[str(workspace["balebase"])]
+    result = sync_mod.sync([workspace["root"]], refresh=True, trust_store=FakeTrust([]), canonical=FakeGitHub())
+    assert result.checkouts[clone].get("reused") is True

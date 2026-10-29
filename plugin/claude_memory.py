@@ -318,6 +318,10 @@ def _plan_settings(g: GroupPlan, clones: list[Path], target: str, unclean: set[P
     unclean = unclean | {s.clone for s in g.sources if s.path in g.kept_paths}
     for clone in clones:
         path = clone / SETTINGS_FILE
+        project_value = (read_settings(clone / ".claude" / "settings.json")[0] or {}).get(SETTING)
+        if project_value:
+            g.settings.append((clone, path, None, f"the project's settings set it to {project_value}; left alone"))
+            continue
         data, note = read_settings(path)
         if data is None:
             g.settings.append((clone, path, None, note))
@@ -364,6 +368,9 @@ def plan(
 ) -> list[GroupPlan]:
     projects = claude_home / "projects"
     canonical_root = claude_home / "repo-memory"
+    # A user-level setting moves every project's memory out of projects/; leave that to the user.
+    user_value = (read_settings(claude_home / "settings.json")[0] or {}).get(SETTING)
+    user_setting = f"{SETTING} is set in the user settings ({user_value}); left alone" if user_value else ""
     # Group by destination, not by spelling: Owner/Repo and owner/repo share one directory.
     names: dict[PurePosixPath, str] = {}
     clones: dict[PurePosixPath, list[Path]] = {}
@@ -371,16 +378,23 @@ def plan(
     stale: dict[PurePosixPath, list[tuple[Path, str]]] = {}
     # Live clones first, so their index lines lead the merged MEMORY.md; then aliases.
     entries = [
-        (info["identity"], Source(projects / path_key(path) / "memory", Path(path)), info.get("url"))
+        (
+            info["identity"],
+            Source(projects / path_key(path) / "memory", Path(path)),
+            info.get("url"),
+            bool(info.get("reused")),
+        )
         for path, info in checkouts.items()
     ]
-    entries += [(identity, Source(projects / key / "memory", None), None) for key, identity in (aliases or {}).items()]
+    entries += [
+        (identity, Source(projects / key / "memory", None), None, False) for key, identity in (aliases or {}).items()
+    ]
     # Claude Code's project key folds every non-alphanumeric character to "-", so foo-bar and
     # foo_bar share one memory directory; such a directory belongs to no single clone.
     users: dict[Path, int] = {}
-    for _identity, src, _url in entries:
+    for _identity, src, _url, _reused in entries:
         users[src.path] = users.get(src.path, 0) + 1
-    for identity, src, url in entries:
+    for identity, src, url, reused in entries:
         sub = memory_subpath(identity)
         if sub is None:
             continue
@@ -392,6 +406,11 @@ def plan(
             continue
         # The cache can be older than the checkout: a path reused for another repository must
         # not pour its memory into the cached one.
+        if reused:
+            stale.setdefault(sub, []).append(
+                (src.path, "this path has held another repository; assign its memory with --alias")
+            )
+            continue
         if src.clone is not None and (not url or remote_url(src.clone) != url):
             stale.setdefault(sub, []).append((src.path, "its clone's remote no longer matches the cache; re-run sync"))
             continue
@@ -425,7 +444,7 @@ def plan(
                 g.keep(s.path, "the memory directory is a symlink")
                 if s.clone is not None:
                     unclean.add(s.clone)
-        g.blocked = _dest_problem(canonical_root, dest)
+        g.blocked = user_setting or _dest_problem(canonical_root, dest)
         if g.blocked:
             for s in g.sources:
                 g.keep(s.path, g.blocked)

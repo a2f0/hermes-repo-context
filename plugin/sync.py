@@ -123,6 +123,13 @@ def sync(
         for k, v in (cache.get("names") or {}).items()
         if isinstance(k, str) and ident.valid_identity(k) and isinstance(v, str) and ident.valid_identity(v)
     }
+    # Every repository seen at each path, kept even across --refresh: a path reused for another
+    # repository holds memory that belongs to neither on its own.
+    history: dict[str, list[str]] = {
+        path: [i for i in seen if isinstance(i, str) and ident.valid_identity(i)]
+        for path, seen in (ident.load_cache().get("history") or {}).items()
+        if isinstance(path, str) and isinstance(seen, list)
+    }
     result = SyncResult()
 
     def current_name(name: str) -> str:
@@ -144,7 +151,13 @@ def sync(
         if not ident.valid_identity(identity):
             identity = current_name(parsed)
         result.urls[url] = identity
-        result.checkouts[str(clone)] = {"url": url, "identity": identity}
+        seen = history.setdefault(str(clone), [])
+        if not any(ident.identity_key(current_name(s)) == ident.identity_key(identity) for s in seen):
+            seen.append(identity)
+        info: dict = {"url": url, "identity": identity}
+        if len({ident.identity_key(current_name(s)) for s in seen}) > 1:
+            info["reused"] = True
+        result.checkouts[str(clone)] = info
 
     store = trust_store or HermesConfigTrust()
     trusted = store.load()
@@ -177,6 +190,7 @@ def sync(
                 "roots": [str(r) for r in roots],
                 "urls": dict(sorted(result.urls.items())),
                 "names": dict(sorted(resolved.items())),
+                "history": dict(sorted(history.items())),
                 "checkouts": dict(sorted(result.checkouts.items())),
             },
             indent=2,
