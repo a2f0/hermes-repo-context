@@ -1,0 +1,27 @@
+[project]
+name = "hermes-repo-context"
+version = "0.1.0"
+description = "Hermes Agent plugin that keys repository learning by Git remote instead of checkout path"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest==9.2.0",
+    "ruff==0.17.3",
+]
+
+[tool.uv]
+package = false
+default-groups = ["dev"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+src = ["plugin", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]

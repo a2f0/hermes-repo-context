@@ -1,0 +1,24 @@
+#!/bin/sh
+set -eu
+
+[ "$#" -eq 1 ] || {
+  echo "Usage: $0 <commit-message-file>" >&2
+  exit 2
+}
+
+case "$1" in
+  /*) message_file=$1 ;;
+  *) message_file=$PWD/$1 ;;
+esac
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+# Check the message Git will record: without comments or a verbose diff.
+normalized=$(mktemp)
+trap 'rm -f "$normalized"' EXIT
+trap 'exit 1' HUP INT TERM
+scissors=$(printf '%s\n' '------------------------ >8 ------------------------' | git stripspace --comment-lines)
+awk -v scissors="$scissors" '$0 == scissors { exit } { print }' "$message_file" |
+  git stripspace --strip-comments >"$normalized"
+
+bun run --silent lint:commit-message "$normalized"

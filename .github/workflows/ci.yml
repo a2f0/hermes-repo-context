@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up pinned Bun, uv, and ShellCheck
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        with:
+          version: 2026.10.17
+          cache: true
+
+      - name: Install locked agent tooling
+        run: bun install --frozen-lockfile
+
+      - name: Validate the actual branch name
+        if: github.event_name == 'pull_request' || github.ref_type == 'branch'
+        env:
+          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+        run: bun run lint:branch-name "$BRANCH_NAME"
+
+      - name: Check for binary files
+        run: bun run lint:binary-files --all
+
+      - name: Lint hook scripts
+        run: bun run lint:scripts
+
+      - name: Check managed agent skills and permissions
+        run: bun run agents:check
+
+      - name: Install locked Python tooling
+        run: uv sync --frozen
+
+      - name: Lint Python
+        run: uv run ruff check
+
+      - name: Check formatting
+        run: uv run ruff format --check
+
+  test:
+    name: Test
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up pinned uv
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        with:
+          version: 2026.10.17
+          install_args: uv
+          cache: true
+
+      - name: Install locked Python tooling
+        run: uv sync --frozen
+
+      - name: Test
+        run: uv run pytest
+
+  # The single required check (see agent-tool.json).
+  gate:
+    name: CI gate
+    if: always()
+    needs: [lint, test]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up pinned Bun
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        with:
+          version: 2026.10.17
+          install_args: bun
+          cache: true
+
+      - name: Install locked agent tooling
+        run: bun install --frozen-lockfile
+
+      - name: Require every job to succeed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: printf '%s\n' "$NEEDS" | bun run agent-tool ci gate - --policy scripts/checks/ci-gate.json

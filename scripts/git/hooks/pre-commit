@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+if branch=$(git symbolic-ref --quiet --short HEAD); then
+  bun run --silent lint:branch-name "$branch"
+fi
+
+bun run --silent lint:binary-files --staged

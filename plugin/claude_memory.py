@@ -1,0 +1,388 @@
+"""Share Claude Code auto memory per Git remote instead of per checkout path.
+
+Claude Code keeps auto memory at ``~/.claude/projects/<path-key>/memory``, so each
+clone of a repository learns separately. ``plan`` and ``apply`` fold each clone's
+memory directory into ``~/.claude/repo-memory/<owner>/<repo>`` (files copied by
+relative path, ``MEMORY.md`` index lines appended when new), set
+``autoMemoryDirectory`` in each clone's gitignored ``.claude/settings.local.json``,
+and only then rename the merged source to ``memory.merged-<date>``. A source that
+cannot be merged completely stays in place and its clone is not redirected, so
+Claude Code keeps seeing it. Nothing is written through a symlink inside the
+shared directory. A symlinked memory directory does not work for Claude Code
+either: it resolves the real path and denies the write.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import shutil
+import subprocess
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from datetime import date
+from pathlib import Path, PurePosixPath
+
+from .identity import git_env, identity_key, remote_url
+
+INDEX = "MEMORY.md"
+INDEX_MAX_LINES, INDEX_MAX_BYTES = 200, 25_000
+SETTING = "autoMemoryDirectory"
+SETTINGS_FILE = ".claude/settings.local.json"
+_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
+
+
+def is_ignored(clone: Path, relative: str) -> bool:
+    """Whether Git ignores *relative* in *clone*, so writing it leaves the checkout clean."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(clone), "check-ignore", "-q", relative],
+            capture_output=True,
+            timeout=10,
+            env=git_env(),
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.returncode == 0
+
+
+def path_key(path: str) -> str:
+    """Claude Code's project directory name for a checkout path."""
+    return re.sub(r"[^A-Za-z0-9]", "-", path)
+
+
+def memory_subpath(identity: str) -> PurePosixPath | None:
+    """``a2f0/matrix`` -> ``a2f0/matrix``: one directory level per identity segment, so two
+    repositories never share a directory. None when a segment is not a safe directory name.
+
+    GitHub names are case-insensitive and are lowercased. Other hosts may be case-sensitive,
+    and a case-insensitive filesystem would merge ``App`` and ``app``, so a mixed-case name
+    there gets a short hash of the exact identity appended to its last segment."""
+    parts = identity.split("/")
+    if len(parts) < 2 or not all(_SEGMENT_RE.match(p) and p not in (".", "..") for p in parts):
+        return None
+    lower = [p.lower() for p in parts]
+    if identity_key(identity) == identity and "/".join(lower) != identity:
+        lower[-1] = f"{lower[-1]}-{hashlib.sha1(identity.encode()).hexdigest()[:8]}"
+    return PurePosixPath(*lower)
+
+
+def display(path: Path, home: Path) -> str:
+    return "~/" + str(path.relative_to(home)) if path.is_relative_to(home) else str(path)
+
+
+def new_index_lines(existing: list[str], incoming: list[str]) -> list[str]:
+    """Lines of *incoming* not already in *existing*; headings only when *existing* is empty."""
+    seen = {line.strip() for line in existing if line.strip()}
+    added = []
+    for line in incoming:
+        text = line.strip()
+        if not text or text in seen or (text.startswith("#") and existing):
+            continue
+        seen.add(text)
+        added.append(line.rstrip("\n"))
+    return added
+
+
+def symlink_under(dest: Path, rel: PurePosixPath) -> bool:
+    """Whether ``dest/rel`` or any directory between *dest* and it is a symlink."""
+    current = dest
+    for part in rel.parts:
+        current = current / part
+        if current.is_symlink():
+            return True
+    return False
+
+
+def fingerprint(path: Path) -> tuple[tuple[str, int, int], ...]:
+    """Name, size, and mtime of everything under *path*, to notice a running session's writes."""
+    entries = []
+    for f in path.rglob("*"):
+        try:
+            st = f.lstat()
+        except OSError:
+            continue
+        entries.append((f.relative_to(path).as_posix(), st.st_size, st.st_mtime_ns))
+    return tuple(sorted(entries))
+
+
+@dataclass
+class Source:
+    path: Path
+    clone: Path | None  # None for an alias whose checkout is gone
+    fingerprint: tuple[tuple[str, int, int], ...] = ()
+
+    def changed(self) -> bool:
+        return fingerprint(self.path) != self.fingerprint
+
+
+@dataclass
+class GroupPlan:
+    identity: str
+    root: Path
+    dest: Path
+    sources: list[Source] = field(default_factory=list)
+    copies: list[tuple[Path, Path, PurePosixPath]] = field(default_factory=list)  # (source dir, file, rel)
+    conflicts: list[Path] = field(default_factory=list)
+    skipped: list[Path] = field(default_factory=list)
+    index_before: int = 0
+    index: list[str] = field(default_factory=list)
+    settings: list[tuple[Path, Path, dict | None, str]] = field(default_factory=list)
+    redirected: set[Path] = field(default_factory=set)
+    kept: list[tuple[Path, str]] = field(default_factory=list)
+    blocked: str = ""
+
+    @property
+    def index_text(self) -> str:
+        return "\n".join(self.index) + "\n" if self.index else ""
+
+    @property
+    def over_limit(self) -> bool:
+        return len(self.index) > INDEX_MAX_LINES or len(self.index_text.encode()) > INDEX_MAX_BYTES
+
+    @property
+    def settings_changes(self) -> list[tuple[Path, Path, dict]]:
+        return [(clone, path, data) for clone, path, data, _ in self.settings if data is not None]
+
+    @property
+    def kept_paths(self) -> set[Path]:
+        return {path for path, _ in self.kept}
+
+    def keep(self, path: Path, reason: str) -> None:
+        if path not in self.kept_paths:
+            self.kept.append((path, reason))
+
+    def archivable(self) -> list[Source]:
+        """Sources that are fully merged and whose clone, if any, reads the shared directory."""
+        return [s for s in self.sources if s.path not in self.kept_paths]
+
+
+def _plan_files(g: GroupPlan) -> None:
+    existing: dict[PurePosixPath, bytes] = {}
+    if g.dest.is_dir():
+        for f in g.dest.rglob("*"):
+            if f.is_file() and not f.is_symlink():
+                existing[PurePosixPath(f.relative_to(g.dest).as_posix())] = f.read_bytes()
+    for src in g.sources:
+        for f in sorted(src.path.rglob("*")):
+            if f.is_symlink() or not (f.is_file() or f.is_dir()):
+                g.skipped.append(f)
+                g.keep(src.path, "holds a symlink or special file")
+                continue
+            if f.is_dir():
+                continue
+            rel = PurePosixPath(f.relative_to(src.path).as_posix())
+            if symlink_under(g.dest, rel):
+                g.conflicts.append(f)
+                g.keep(src.path, "the shared copy is behind a symlink")
+            elif rel == PurePosixPath(INDEX):
+                g.index += new_index_lines(g.index, f.read_text().splitlines())
+            elif rel in existing and existing[rel] != f.read_bytes():
+                g.conflicts.append(f)
+                g.keep(src.path, "a file differs from the shared copy")
+            elif rel not in existing:
+                g.copies.append((src.path, f, rel))
+                existing[rel] = f.read_bytes()
+
+
+def _plan_settings(g: GroupPlan, clones: list[Path], target: str, unclean: set[Path]) -> None:
+    unclean = unclean | {s.clone for s in g.sources if s.path in g.kept_paths}
+    for clone in clones:
+        path = clone / SETTINGS_FILE
+        data: dict = {}
+        if path.is_symlink() or path.parent.is_symlink():
+            g.settings.append((clone, path, None, "settings file or .claude is a symlink; left alone"))
+            continue
+        if path.is_file():
+            try:
+                data = json.loads(path.read_text() or "{}")
+            except ValueError:
+                g.settings.append((clone, path, None, "unparsable; left alone"))
+                continue
+            if not isinstance(data, dict):
+                g.settings.append((clone, path, None, "not a JSON object; left alone"))
+                continue
+        current = data.get(SETTING)
+        if current == target:
+            g.redirected.add(clone)
+        elif current:
+            g.settings.append((clone, path, None, f"already set to {current}; left alone"))
+        elif clone in unclean:
+            g.settings.append((clone, path, None, "left alone until its memory merges cleanly"))
+        elif not is_ignored(clone, SETTINGS_FILE):
+            g.settings.append((clone, path, None, "not gitignored in this clone; left alone"))
+        else:
+            g.settings.append((clone, path, {**data, SETTING: target}, "set"))
+
+
+def _is_mergeable(path: Path, dest: Path) -> bool:
+    """A real, non-empty memory directory other than the shared one."""
+    return path.is_dir() and not path.is_symlink() and any(path.iterdir()) and path.resolve() != dest.resolve()
+
+
+def _dest_problem(root: Path, dest: Path) -> str:
+    """Why *dest* must not be written, or "" when it is safe: *root* (``repo-memory``) and every
+    directory from it down to *dest* must be a real directory or not exist yet."""
+    current = root
+    for part in (None, *dest.relative_to(root).parts):
+        if part is not None:
+            current = current / part
+        if current.is_symlink() or (current.exists() and not current.is_dir()):
+            return f"{current} is a symlink or not a directory"
+    if (dest / INDEX).is_symlink():
+        return f"the shared {INDEX} is a symlink"
+    return ""
+
+
+def plan(
+    checkouts: dict[str, dict[str, str]],
+    *,
+    claude_home: Path,
+    home: Path,
+    aliases: dict[str, str] | None = None,
+    only: Iterable[str] = (),
+) -> list[GroupPlan]:
+    projects = claude_home / "projects"
+    canonical_root = claude_home / "repo-memory"
+    # Group by destination, not by spelling: Owner/Repo and owner/repo share one directory.
+    names: dict[PurePosixPath, str] = {}
+    clones: dict[PurePosixPath, list[Path]] = {}
+    sources: dict[PurePosixPath, list[Source]] = {}
+    stale: dict[PurePosixPath, list[Path]] = {}
+    # Live clones first, so their index lines lead the merged MEMORY.md; then aliases.
+    entries = [
+        (info["identity"], Source(projects / path_key(path) / "memory", Path(path)), info.get("url"))
+        for path, info in checkouts.items()
+    ]
+    entries += [(identity, Source(projects / key / "memory", None), None) for key, identity in (aliases or {}).items()]
+    for identity, src, url in entries:
+        sub = memory_subpath(identity)
+        if sub is None:
+            continue
+        names.setdefault(sub, identity)
+        clones.setdefault(sub, [])
+        sources.setdefault(sub, [])
+        # The cache can be older than the checkout: a path reused for another repository must
+        # not pour its memory into the cached one.
+        if src.clone is not None and (not url or remote_url(src.clone) != url):
+            stale.setdefault(sub, []).append(src.path)
+            continue
+        sources[sub].append(src)
+        if src.clone is not None:
+            clones[sub].append(src.clone)
+    wanted = set()
+    for o in only:
+        sub = memory_subpath(o)
+        if sub is None:
+            raise ValueError(f"invalid repository {o!r}; expected OWNER/REPO")
+        wanted.add(sub)
+
+    plans = []
+    for sub in sorted(sources):
+        if wanted and sub not in wanted:
+            continue
+        dest = canonical_root / sub
+        g = GroupPlan(identity=names[sub], root=canonical_root, dest=dest)
+        g.sources = [s for s in sources[sub] if _is_mergeable(s.path, dest)]
+        for s in g.sources:
+            s.fingerprint = fingerprint(s.path)
+        for path in stale.get(sub, []):
+            g.keep(path, "its clone's remote no longer matches the cache; re-run sync")
+        # A clone whose memory directory is a symlink is not merged, so it must not be redirected.
+        unclean = set()
+        for s in sources[sub]:
+            if s.path.is_symlink():
+                g.keep(s.path, "the memory directory is a symlink")
+                if s.clone is not None:
+                    unclean.add(s.clone)
+        g.blocked = _dest_problem(canonical_root, dest)
+        if g.blocked:
+            for s in g.sources:
+                g.keep(s.path, g.blocked)
+            plans.append(g)
+            continue
+        existing_index = (dest / INDEX).read_text().splitlines() if (dest / INDEX).is_file() else []
+        g.index_before = len(existing_index)
+        g.index = list(existing_index)
+        _plan_files(g)
+        _plan_settings(g, clones[sub], display(dest, home), unclean)
+        redirectable = g.redirected | {clone for clone, _, _ in g.settings_changes}
+        for s in g.sources:
+            if s.clone is not None and s.clone not in redirectable:
+                g.keep(s.path, "its clone's settings were not redirected")
+        if g.sources or g.settings or g.kept:
+            plans.append(g)
+    return plans
+
+
+def _write_index(g: GroupPlan) -> None:
+    """Append the planned index lines to the shared index as it is now, so lines a running
+    session added since planning survive; the write replaces the file atomically."""
+    index = g.dest / INDEX
+    current = index.read_text().splitlines() if index.is_file() else []
+    added = new_index_lines(current, g.index)
+    if not added:
+        return
+    tmp = index.with_name(f".{INDEX}.tmp")
+    tmp.write_text("\n".join(current + added) + "\n")
+    tmp.replace(index)
+
+
+def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
+    """Copy, redirect, then archive: a source is renamed only once its clone reads the shared
+    directory, so Claude Code never loses sight of a memory it was using."""
+    stamp = today or date.today().isoformat()
+    for g in plans:
+        if g.blocked or _dest_problem(g.root, g.dest):
+            continue
+        g.dest.mkdir(parents=True, exist_ok=True)
+        for src_dir, f, rel in g.copies:
+            if symlink_under(g.dest, rel):
+                g.conflicts.append(f)
+                g.keep(src_dir, "the shared copy is behind a symlink")
+                continue
+            target = g.dest / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            content = f.read_bytes()
+            try:
+                with open(target, "xb") as out:  # never overwrite a file written since planning
+                    out.write(content)
+            except FileExistsError:
+                if target.read_bytes() != content:
+                    g.conflicts.append(f)
+                    g.keep(src_dir, "a file differs from the shared copy")
+                continue
+            shutil.copystat(f, target)
+        _write_index(g)
+        for s in g.sources:
+            if s.path not in g.kept_paths and s.changed():
+                g.keep(s.path, "changed since planning; re-run to merge it")
+        for clone, path, data in g.settings_changes:
+            if any(s.clone == clone and s.path in g.kept_paths for s in g.sources):
+                continue
+            if path.is_symlink() or path.parent.is_symlink():
+                for s in g.sources:
+                    if s.clone == clone:
+                        g.keep(s.path, "its settings file became a symlink")
+                continue
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(data, indent=2) + "\n")
+            except OSError as exc:
+                for s in g.sources:
+                    if s.clone == clone:
+                        g.keep(s.path, f"writing its settings failed: {exc}")
+                continue
+            g.redirected.add(clone)
+        for src in g.archivable():
+            if src.changed():
+                g.keep(src.path, "changed since planning; re-run to merge it")
+                continue
+            target = src.path.with_name(f"memory.merged-{stamp}")
+            n = 1
+            while target.exists():
+                n += 1
+                target = src.path.with_name(f"memory.merged-{stamp}.{n}")
+            src.path.rename(target)

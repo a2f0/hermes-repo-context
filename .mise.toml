@@ -1,0 +1,4 @@
+[tools]
+bun = "1.4.3"
+uv = "0.13.4"
+shellcheck = "0.11.0"
