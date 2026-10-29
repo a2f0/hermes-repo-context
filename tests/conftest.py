@@ -16,6 +16,8 @@ def _load_plugin() -> None:
     spec = importlib.util.spec_from_file_location(
         "repo_context", PLUGIN_DIR / "__init__.py", submodule_search_locations=[str(PLUGIN_DIR)]
     )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load the plugin from {PLUGIN_DIR}")
     module = importlib.util.module_from_spec(spec)
     sys.modules["repo_context"] = module
     spec.loader.exec_module(module)

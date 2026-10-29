@@ -46,7 +46,7 @@ class HermesConfigTrust:
 
 @dataclass
 class SyncResult:
-    checkouts: dict[str, dict[str, str]] = field(default_factory=dict)
+    checkouts: dict[str, ident.CheckoutInfo] = field(default_factory=dict)
     urls: dict[str, str] = field(default_factory=dict)
     managed: set[str] = field(default_factory=set)
     trusted_added: list[str] = field(default_factory=list)
@@ -88,7 +88,7 @@ def gh_canonical(name: str) -> str | None:
     return (out.stdout.strip() or None) if out.returncode == 0 else None
 
 
-def managed_identities(checkouts: dict[str, dict[str, str]], trusted_paths: set[str]) -> set[str]:
+def managed_identities(checkouts: dict[str, ident.CheckoutInfo], trusted_paths: set[str]) -> set[str]:
     """The identity of every matrix workspace the user already trusts, and the repositories its
     ``matrix.json`` lists. A manifest in an untrusted clone grants nothing, so a cloned repository
     cannot trust itself by shipping a ``matrix.json``."""
@@ -149,14 +149,13 @@ def sync(
         if not url or not parsed:
             result.unresolved.append(str(clone))
             continue
-        identity = old_urls.get(url)
-        if not ident.valid_identity(identity):
-            identity = current_name(parsed)
+        cached = old_urls.get(url)
+        identity = cached if ident.valid_identity(cached) else current_name(parsed)
         result.urls[url] = identity
         seen = history.setdefault(path_key(str(project_root(clone))), [])
         if not any(ident.identity_key(current_name(s)) == ident.identity_key(identity) for s in seen):
             seen.append(identity)
-        info: dict = {"url": url, "identity": identity}
+        info: ident.CheckoutInfo = {"url": url, "identity": identity}
         if len({ident.identity_key(current_name(s)) for s in seen}) > 1:
             info["reused"] = True
         result.checkouts[str(clone)] = info

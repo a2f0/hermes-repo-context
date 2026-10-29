@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
-from repo_context import SECTION_ID, _section
-from repo_context import identity as ident
 
 from conftest import make_clone
+
+# Hermes loads the plugin as ``repo_context`` (see conftest.py); mypy checks it as ``plugin``.
+if TYPE_CHECKING:
+    from plugin import SECTION_ID, _section
+    from plugin import identity as ident
+else:
+    from repo_context import SECTION_ID, _section
+    from repo_context import identity as ident
 
 
 @pytest.mark.parametrize(
@@ -136,8 +143,8 @@ def test_remote_identities_with_unsafe_characters_are_rejected() -> None:
 
 def test_unsafe_checkout_paths_are_not_rendered(tmp_path: Path) -> None:
     assert ident.prompt_path("/home/me/github/x") == "`/home/me/github/x`"
-    assert ident.prompt_path("/tmp/x\n## New section") == "this checkout"
-    assert ident.prompt_path("/tmp/`x`") == "this checkout"
+    assert ident.prompt_path("/home/me/x\n## New section") == "this checkout"
+    assert ident.prompt_path("/home/me/`x`") == "this checkout"
 
 
 def test_alternate_skill_is_found_once_the_flat_name_is_free(hermes_home: Path) -> None:

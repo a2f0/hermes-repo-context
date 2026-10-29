@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING, ClassVar
 
 import pytest
-from repo_context import identity as ident
-from repo_context import sync as sync_mod
 
 from conftest import make_clone
+
+# Hermes loads the plugin as ``repo_context`` (see conftest.py); mypy checks it as ``plugin``.
+if TYPE_CHECKING:
+    from plugin import identity as ident
+    from plugin import sync as sync_mod
+else:
+    from repo_context import identity as ident
+    from repo_context import sync as sync_mod
 
 
 class FakeTrust:
@@ -24,7 +31,7 @@ class FakeTrust:
 
 
 class FakeGitHub:
-    renames = {"a2f0/stealth": "a2f0/balebase"}
+    renames: ClassVar[dict[str, str]] = {"a2f0/stealth": "a2f0/balebase"}
 
     def __init__(self) -> None:
         self.calls: list[str] = []
