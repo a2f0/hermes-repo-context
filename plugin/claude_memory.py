@@ -478,9 +478,15 @@ def plan(
     alias_keys = set(aliases or {})
     claimants: dict[Path, list[Path]] = {}  # aliased memory directory -> clones that map to it
     entries = []
+    alias_subs = {key: memory_subpath(identity) for key, identity in (aliases or {}).items()}
+    owned_keys: set[str] = set()  # aliases that name the checkout's own repository
     for path, info in checkouts.items():
         key = path_key(str(project_root(Path(path))))
-        claimed = key in alias_keys
+        if key in alias_keys and alias_subs[key] == memory_subpath(info["identity"]):
+            # The alias confirms what the checkout already says: it owns its memory, reused or not.
+            owned_keys.add(key)
+            info = {**info, "reused": False}
+        claimed = key in alias_keys and alias_subs[key] != memory_subpath(info["identity"])
         if claimed:
             claimants.setdefault(projects / key / "memory", []).append(Path(path))
         reused = bool(info.get("reused")) and not claimed
@@ -490,6 +496,7 @@ def plan(
     entries += [
         (identity, Source(projects / key / "memory", None), None, False, False)
         for key, identity in (aliases or {}).items()
+        if key not in owned_keys
     ]
     # Worktrees of one repository share its memory directory (Claude Code keys it by the main
     # checkout): one source carries them all, and each worktree's settings are redirected.

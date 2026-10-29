@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Protocol
 
 from . import identity as ident
-from .claude_memory import path_key
+from .claude_memory import path_key, project_root
 
 
 class TrustStore(Protocol):
@@ -153,7 +153,7 @@ def sync(
         if not ident.valid_identity(identity):
             identity = current_name(parsed)
         result.urls[url] = identity
-        seen = history.setdefault(path_key(str(clone)), [])
+        seen = history.setdefault(path_key(str(project_root(clone))), [])
         if not any(ident.identity_key(current_name(s)) == ident.identity_key(identity) for s in seen):
             seen.append(identity)
         info: dict = {"url": url, "identity": identity}

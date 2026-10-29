@@ -801,3 +801,15 @@ def test_settings_failure_without_memory_is_reported(env: dict[str, Path], monke
     finally:
         (env["two"] / ".claude").chmod(0o700)
     assert "NOT REDIRECTED" in capsys.readouterr().out
+
+
+def test_alias_naming_the_checkouts_own_repository_completes_in_one_apply(env: dict[str, Path]) -> None:
+    found = checkouts(env)
+    found[str(env["two"])]["reused"] = True
+    key = cm.path_key(str(env["two"]))
+    plans = cm.plan(found, claude_home=env["claude"], home=env["home"], aliases={key: "a2f0/demo"})
+    cm.apply(plans, today="2026-10-29")
+    assert not source(env, "two").exists()
+    assert (plans[0].dest / "b.md").read_text() == "b"
+    two = json.loads((env["two"] / ".claude" / "settings.local.json").read_text())
+    assert two["autoMemoryDirectory"] == SHARED

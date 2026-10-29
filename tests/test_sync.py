@@ -162,3 +162,18 @@ def test_project_key_history_survives_a_deleted_clone(tmp_path: Path) -> None:
     second = make_clone(root / "foo_bar", "git@github.com:a2f0/second.git")
     result = sync_mod.sync([root], trust_store=FakeTrust([]), canonical=FakeGitHub())
     assert result.checkouts[str(second)].get("reused") is True
+
+
+def test_history_is_keyed_by_the_main_checkout(tmp_path: Path) -> None:
+    import subprocess
+
+    root = tmp_path / "src"
+    main = make_clone(root / "main", "git@github.com:a2f0/first.git")
+    git = ["git", "-C", str(main), "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    sync_mod.sync([root], trust_store=FakeTrust([]), canonical=FakeGitHub())
+    subprocess.run([*git, "remote", "set-url", "origin", "git@github.com:a2f0/second.git"], check=True)
+    tree = (root / "feature").resolve()
+    subprocess.run([*git, "worktree", "add", "-q", str(tree)], check=True)
+    result = sync_mod.sync([root], trust_store=FakeTrust([]), canonical=FakeGitHub())
+    assert result.checkouts[str(tree)].get("reused") is True
