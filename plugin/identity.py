@@ -20,7 +20,12 @@ _GIT_TIMEOUT_S = 3
 # (``git@github.com:1234/repo``) is part of the path there.
 _SCHEME_URL_RE = re.compile(r"^[a-z][a-z0-9+.-]*://(?:[^@/]+@)?(?P<host>[^/:]+)(?::\d+)?/(?P<path>.+?)(?:\.git)?/*$")
 _SCP_URL_RE = re.compile(r"^(?:[^@/]+@)?(?P<host>[^/:]+):(?P<path>[^/].*?)(?:\.git)?/*$")
-_SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+# Hermes's skill authoring standard, which its skill linter reports as an error: lowercase letters,
+# digits, hyphens, and underscores, at most 64 characters. skill_manage also accepts dots.
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+_SKILL_NAME_MAX = 64
+# Before 0.2.0 a skill name kept the repository's dots (``a2f0-a2f0.net``); such skills still count.
+_LEGACY_SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 # GitHub alone: renames resolve through gh, and its names are case-insensitive two-part paths,
 # so identities never nest, collide by case, or differ only by a port.
 _GITHUB_HOSTS = frozenset({"github.com", "ssh.github.com", "www.github.com"})
@@ -99,9 +104,18 @@ def names_identity(text: str, identity: str) -> bool:
     return identity.lower() in text.lower()
 
 
+def _flat_skill_name(identity: str, separator: str) -> str:
+    return identity.lower().replace(".", "-").replace("/", separator)
+
+
+def _valid_skill_name(name: str) -> bool:
+    return len(name) <= _SKILL_NAME_MAX and bool(_SKILL_NAME_RE.match(name))
+
+
 def skill_name(identity: str) -> str | None:
-    name = identity.lower().replace("/", "-")
-    return name if _SKILL_NAME_RE.match(name) else None
+    """The repo skill name for *identity*: ``owner-repo``, lowercased, with dots as hyphens."""
+    name = _flat_skill_name(identity, "-")
+    return name if _valid_skill_name(name) else None
 
 
 def git_env() -> dict[str, str]:
@@ -191,24 +205,32 @@ def find_skill(name: str) -> Path | None:
 def repo_skill(identity: str) -> tuple[str | None, Path | None]:
     """``(name, SKILL.md path or None)`` of the repo skill for *identity*.
 
-    The flat ``owner-repo`` name can collide (``a-b/c`` and ``a/b-c``), so an existing skill
-    counts only when its SKILL.md names *identity*; otherwise the ``owner--repo`` name is used.
+    The flat ``owner-repo`` name can collide (``a-b/c`` and ``a/b-c``, or ``a/b.c`` and
+    ``a/b-c``), so an existing skill counts only when its SKILL.md names *identity*; otherwise the
+    ``owner--repo`` name is used. A skill under either name from before dots became hyphens
+    (``a2f0-a2f0.net``, ``a2f0--a2f0.net``) still counts when it names *identity*.
     """
     name = skill_name(identity)
     if name is None:
         return None, None
-    found = find_skill(name)
-    if found is not None and names_identity(found.read_text(errors="replace"), identity):
-        return name, found
-    alternate = identity.lower().replace("/", "--")
-    alt_found = find_skill(alternate) if _SKILL_NAME_RE.match(alternate) else None
-    if alt_found is not None and names_identity(alt_found.read_text(errors="replace"), identity):
-        return alternate, alt_found  # created while the flat name belonged to another repository
-    if found is None:
+    alternate = _flat_skill_name(identity, "--")
+    candidates = [name]
+    if _valid_skill_name(alternate):
+        candidates.append(alternate)
+    for separator in ("-", "--"):
+        legacy = identity.lower().replace("/", separator)
+        if legacy not in candidates and _LEGACY_SKILL_NAME_RE.match(legacy):
+            candidates.append(legacy)
+    found: dict[str, Path | None] = {}
+    for candidate in candidates:
+        found[candidate] = path = find_skill(candidate)
+        if path is not None and names_identity(path.read_text(errors="replace"), identity):
+            return candidate, path
+    if found[name] is None:
         return name, None
-    if alt_found is not None or not _SKILL_NAME_RE.match(alternate):
-        return None, None
-    return alternate, None
+    if _valid_skill_name(alternate) and found[alternate] is None:
+        return alternate, None  # the flat name belongs to another repository
+    return None, None
 
 
 def matrix_workspace(root: Path) -> tuple[Path, str | None] | None:

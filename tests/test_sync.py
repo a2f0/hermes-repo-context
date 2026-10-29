@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 import pytest
 
-from conftest import make_clone
+from conftest import git_commit, make_clone
 
 # Hermes loads the plugin as ``repo_context`` (see conftest.py); mypy checks it as ``plugin``.
 if TYPE_CHECKING:
@@ -176,9 +176,9 @@ def test_history_is_keyed_by_the_main_checkout(tmp_path: Path) -> None:
 
     root = tmp_path / "src"
     main = make_clone(root / "main", "git@github.com:a2f0/first.git")
-    git = ["git", "-C", str(main), "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
-    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    git_commit(main, "--allow-empty", "-m", "init")
     sync_mod.sync([root], trust_store=FakeTrust([]), canonical=FakeGitHub())
+    git = ["git", "-C", str(main)]
     subprocess.run([*git, "remote", "set-url", "origin", "git@github.com:a2f0/second.git"], check=True)
     tree = (root / "feature").resolve()
     subprocess.run([*git, "worktree", "add", "-q", str(tree)], check=True)

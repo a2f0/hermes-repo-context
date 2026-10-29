@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from conftest import make_clone
+from conftest import git_commit, make_clone, make_worktree_clone
 
 # Hermes loads the plugin as ``repo_context`` (see conftest.py); mypy checks it as ``plugin``.
 if TYPE_CHECKING:
@@ -146,11 +146,13 @@ def test_never_writes_through_a_symlink_in_the_shared_directory(env: dict[str, P
     assert not (env["two"] / ".claude" / "settings.local.json").exists()
 
 
-def test_symlinked_shared_directory_blocks_the_group(env: dict[str, Path], tmp_path: Path) -> None:
+@pytest.mark.parametrize("linked", ["a2f0/demo", "a2f0"], ids=["shared-directory", "its-ancestor"])
+def test_symlinked_shared_directory_blocks_the_group(env: dict[str, Path], tmp_path: Path, linked: str) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
-    (env["claude"] / "repo-memory" / "a2f0").mkdir(parents=True)
-    (env["claude"] / "repo-memory" / "a2f0" / "demo").symlink_to(outside, target_is_directory=True)
+    link = env["claude"] / "repo-memory" / linked
+    link.parent.mkdir(parents=True)
+    link.symlink_to(outside, target_is_directory=True)
     plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
     assert plans[0].blocked
     cm.apply(plans, today="2026-10-29")
@@ -229,18 +231,6 @@ def test_symlinked_memory_directory_is_not_redirected(env: dict[str, Path], tmp_
     cm.apply(plans, today="2026-10-29")
     assert "autoMemoryDirectory" not in json.loads((env["one"] / ".claude" / "settings.local.json").read_text())
     assert source(env, "one").is_symlink()
-
-
-def test_symlinked_ancestor_of_the_shared_directory_blocks_the_group(env: dict[str, Path], tmp_path: Path) -> None:
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (env["claude"] / "repo-memory").mkdir(parents=True)
-    (env["claude"] / "repo-memory" / "a2f0").symlink_to(outside, target_is_directory=True)
-    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
-    assert plans[0].blocked
-    cm.apply(plans, today="2026-10-29")
-    assert list(outside.iterdir()) == []
-    assert source(env, "one").is_dir() and source(env, "two").is_dir()
 
 
 def test_invalid_only_is_rejected(env: dict[str, Path]) -> None:
@@ -754,13 +744,7 @@ def test_claimant_waits_for_its_aliased_memory_to_merge(env: dict[str, Path]) ->
 def test_worktrees_share_the_main_checkouts_memory(tmp_path: Path) -> None:
     home = tmp_path / "home"
     claude = home / ".claude"
-    main = make_clone(home / "github" / "wt", URL)
-    git = ["git", "-C", str(main), "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
-    (main / ".gitignore").write_text(".claude/settings.local.json\n")
-    subprocess.run([*git, "add", ".gitignore"], check=True)
-    subprocess.run([*git, "commit", "-q", "-m", "init"], check=True)
-    linked = (home / "github" / "wt-feature").resolve()
-    subprocess.run([*git, "worktree", "add", "-q", str(linked)], check=True)
+    main, linked = make_worktree_clone(home / "github" / "wt", URL, home / "github" / "wt-feature")
     assert cm.project_root(linked) == main
     memory = claude / "projects" / cm.path_key(str(main)) / "memory"
     memory.mkdir(parents=True)
@@ -782,13 +766,7 @@ def test_worktrees_share_the_main_checkouts_memory(tmp_path: Path) -> None:
 def test_uncached_worktrees_are_redirected_too(tmp_path: Path) -> None:
     home = tmp_path / "home"
     claude = home / ".claude"
-    main = make_clone(home / "github" / "wt", URL)
-    git = ["git", "-C", str(main), "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
-    (main / ".gitignore").write_text(".claude/settings.local.json\n")
-    subprocess.run([*git, "add", ".gitignore"], check=True)
-    subprocess.run([*git, "commit", "-q", "-m", "init"], check=True)
-    hidden = (main / ".claude" / "worktrees" / "agent").resolve()
-    subprocess.run([*git, "worktree", "add", "-q", str(hidden)], check=True)
+    main, hidden = make_worktree_clone(home / "github" / "wt", URL, ".claude/worktrees/agent")
     memory = claude / "projects" / cm.path_key(str(main)) / "memory"
     memory.mkdir(parents=True)
     (memory / "a.md").write_text("a")
@@ -835,13 +813,7 @@ def test_alias_naming_the_checkouts_own_repository_completes_in_one_apply(env: d
 def test_claimant_worktrees_are_watched_and_redirected(tmp_path: Path) -> None:
     home = tmp_path / "home"
     claude = home / ".claude"
-    main = make_clone(home / "github" / "wt", URL)
-    git = ["git", "-C", str(main), "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
-    (main / ".gitignore").write_text(".claude/settings.local.json\n")
-    subprocess.run([*git, "add", ".gitignore"], check=True)
-    subprocess.run([*git, "commit", "-q", "-m", "init"], check=True)
-    hidden = (main / ".claude" / "worktrees" / "agent").resolve()
-    subprocess.run([*git, "worktree", "add", "-q", str(hidden)], check=True)
+    main, hidden = make_worktree_clone(home / "github" / "wt", URL, ".claude/worktrees/agent")
     key = cm.path_key(str(main))
     memory = claude / "projects" / key / "memory"
     memory.mkdir(parents=True)
@@ -874,9 +846,8 @@ def test_shared_memory_is_private(env: dict[str, Path]) -> None:
 
 def test_worktree_paths_needing_quotes_are_found(tmp_path: Path) -> None:
     main = make_clone(tmp_path / "wt", URL)
-    git = ["git", "-C", str(main), "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
-    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    git_commit(main, "--allow-empty", "-m", "init")
     odd = (tmp_path / "line\nbreak").resolve()
-    subprocess.run([*git, "worktree", "add", "-q", "--detach", str(odd)], check=True)
+    subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", "--detach", str(odd)], check=True)
     # Line-based porcelain splits this path; -z keeps it whole.
     assert cm.registered_worktrees(main) == [main, odd]

@@ -28,7 +28,11 @@ section in their system prompt.
   create it in the `repos` category when a repository-specific lesson appears,
   and keep memory for facts that hold in every repository. A skill counts only
   when it names its `owner/repo`; if another repository already holds the flat
-  name (`a-b/c` and `a/b-c`), the plugin uses `<owner>--<repo>`. The section is
+  name (`a-b/c` and `a/b-c`), the plugin uses `<owner>--<repo>`. Names are
+  lowercase and turn dots into hyphens (`a2f0/a2f0.net` is `a2f0-a2f0-net`), as
+  Hermes's skill linter requires; a skill created before 0.2.0 under the dotted
+  name still counts, and renaming it (directory and frontmatter `name`) to the
+  new name is safe. The section is
   rendered once per session, so it never breaks prompt caching, and is empty
   outside a checkout with a remote.
 - **`hermes repo-context sync`** scans the clones under `~/github` (repeat
@@ -84,3 +88,10 @@ With Hermes installed, `hermes plugins doctor plugin --ci` and
 | `scripts/testing/verify.json` | The `bun run check` step list |
 | `scripts/git/hooks/` | Git hooks, installed by `bun run hooks:install` |
 | `scripts/checks/ci-gate.json` | The jobs `CI gate` requires |
+
+The plugin's modules form layers, each importing only those below it:
+`identity` (remote parsing, prompt section, cache) at the bottom, then
+`claude_memory`, `sync`, `cli`, and the package `__init__` on top. The plugin
+imports only the standard library, plus Hermes's own modules inside functions.
+`tests/test_module_graph.py` enforces the layers, the absence of import cycles,
+and the import rules; add a new module to its `LAYERS`.
