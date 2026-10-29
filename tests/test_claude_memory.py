@@ -734,3 +734,28 @@ def test_claimant_waits_for_its_aliased_memory_to_merge(env: dict[str, Path]) ->
     assert not source(env, "two").exists()
     two = json.loads((env["two"] / ".claude" / "settings.local.json").read_text())
     assert two["autoMemoryDirectory"] == SHARED
+
+
+def test_worktrees_share_the_main_checkouts_memory(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    main = make_clone(home / "github" / "wt", URL)
+    git = ["git", "-C", str(main), "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+    (main / ".gitignore").write_text(".claude/settings.local.json\n")
+    subprocess.run([*git, "add", ".gitignore"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "init"], check=True)
+    linked = (home / "github" / "wt-feature").resolve()
+    subprocess.run([*git, "worktree", "add", "-q", str(linked)], check=True)
+    assert cm.project_root(linked) == main
+    memory = claude / "projects" / cm.path_key(str(main)) / "memory"
+    memory.mkdir(parents=True)
+    (memory / "a.md").write_text("a")
+    found = {str(main): {"url": URL, "identity": "a2f0/demo"}, str(linked): {"url": URL, "identity": "a2f0/demo"}}
+    plans = cm.plan(found, claude_home=claude, home=home)
+    assert [(s.clone, s.worktrees) for s in plans[0].sources] == [(main, [linked])]
+    cm.apply(plans, today="2026-10-29")
+    assert (claude / "repo-memory" / "a2f0" / "demo" / "a.md").read_text() == "a"
+    assert not memory.exists()
+    for clone in (main, linked):
+        settings = json.loads((clone / ".claude" / "settings.local.json").read_text())
+        assert settings["autoMemoryDirectory"] == "~/.claude/repo-memory/a2f0/demo"

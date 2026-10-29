@@ -30,7 +30,7 @@ from datetime import date
 from pathlib import Path, PurePosixPath
 
 from .identity import atomic_write as _atomic_write
-from .identity import git_env, remote_url, valid_identity
+from .identity import git, git_env, remote_url, valid_identity
 
 INDEX = "MEMORY.md"
 INDEX_MAX_LINES, INDEX_MAX_BYTES = 200, 25_000
@@ -51,6 +51,17 @@ def is_ignored(clone: Path, relative: str) -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return out.returncode == 0
+
+
+def project_root(clone: Path) -> Path:
+    """The main checkout of *clone*'s repository: Claude Code keys auto memory by it, so every
+    worktree shares the main checkout's memory directory."""
+    common = git(clone, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if common:
+        common_path = Path(common)
+        if common_path.name == ".git":
+            return common_path.parent
+    return clone
 
 
 def path_key(path: str) -> str:
@@ -230,6 +241,11 @@ class Source:
     path: Path
     clone: Path | None  # None for an alias whose checkout is gone
     fingerprint: tuple[tuple[str, int, int], ...] = ()
+    worktrees: list[Path] = field(default_factory=list)  # other worktrees of the clone's repository
+
+    @property
+    def all_clones(self) -> list[Path]:
+        return ([self.clone] if self.clone is not None else []) + self.worktrees
 
     def changed(self) -> bool:
         return fingerprint(self.path) != self.fingerprint
@@ -371,7 +387,7 @@ def _plan_files(g: GroupPlan) -> None:
 
 
 def _plan_settings(g: GroupPlan, clones: list[Path], target: str, unclean: set[Path]) -> None:
-    unclean = unclean | {s.clone for s in g.sources if s.path in g.kept_paths}
+    unclean = unclean | {c for s in g.sources if s.path in g.kept_paths for c in s.all_clones}
     for clone in clones:
         path = clone / SETTINGS_FILE
         project_value, project_ok = configured_memory(clone / ".claude" / "settings.json")
@@ -450,7 +466,7 @@ def plan(
     claimants: dict[Path, list[Path]] = {}  # aliased memory directory -> clones that map to it
     entries = []
     for path, info in checkouts.items():
-        key = path_key(path)
+        key = path_key(str(project_root(Path(path))))
         claimed = key in alias_keys
         if claimed:
             claimants.setdefault(projects / key / "memory", []).append(Path(path))
@@ -462,6 +478,20 @@ def plan(
         (identity, Source(projects / key / "memory", None), None, False, False)
         for key, identity in (aliases or {}).items()
     ]
+    # Worktrees of one repository share its memory directory (Claude Code keys it by the main
+    # checkout): one source carries them all, and each worktree's settings are redirected.
+    primary: dict[tuple[Path, PurePosixPath | None], Source] = {}
+    merged_entries = []
+    for entry in entries:
+        identity, src, _url, _reused, claimed = entry
+        slot = (src.path, memory_subpath(identity))
+        if src.clone is not None and not claimed and slot in primary:
+            primary[slot].worktrees.append(src.clone)
+            continue
+        if src.clone is not None and not claimed:
+            primary[slot] = src
+        merged_entries.append(entry)
+    entries = merged_entries
     # Claude Code's project key folds every non-alphanumeric character to "-", so foo-bar and
     # foo_bar share one memory directory; such a directory belongs to no single clone.
     users: dict[Path, int] = {}
@@ -495,8 +525,7 @@ def plan(
             )
             continue
         sources[sub].append(src)
-        if src.clone is not None:
-            clones[sub].append(src.clone)
+        clones[sub].extend(src.all_clones)
     wanted = set()
     for o in only:
         sub = memory_subpath(o)
@@ -513,7 +542,7 @@ def plan(
         g.sources = [s for s in sources[sub] if _is_mergeable(s.path, dest)]
         for s in g.sources:
             s.fingerprint = fingerprint(s.path)
-        g.clone_sources = {s.clone: s.path for s in sources[sub] if s.clone is not None}
+        g.clone_sources = {c: s.path for s in sources[sub] for c in s.all_clones}
         g.target = display(dest, home)
         g.clones = list(clones[sub])
         g.watch = {c for s in sources[sub] for c in claimants.get(s.path, [])}
@@ -525,8 +554,7 @@ def plan(
         for s in sources[sub]:
             if s.path.is_symlink():
                 g.keep(s.path, "the memory directory is a symlink")
-                if s.clone is not None:
-                    unclean.add(s.clone)
+                unclean.update(s.all_clones)
         g.blocked = user_setting or _dest_problem(canonical_root, dest)
         if g.blocked:
             for s in g.sources:
@@ -540,7 +568,7 @@ def plan(
         _plan_settings(g, clones[sub], display(dest, home), unclean)
         redirectable = g.redirected | {clone for clone, _, _ in g.settings_changes}
         for s in g.sources:
-            if s.clone is not None and s.clone not in redirectable:
+            if any(c not in redirectable for c in s.all_clones):
                 g.keep(s.path, "its clone's settings were not redirected")
         if g.sources or g.settings or g.kept:
             plans.append(g)
@@ -582,7 +610,7 @@ def _write_index(g: GroupPlan) -> None:
 
 def _keep_clone(g: GroupPlan, clone: Path, reason: str) -> None:
     for s in g.sources:
-        if s.clone == clone:
+        if clone in s.all_clones:
             g.keep(s.path, reason)
 
 
@@ -738,7 +766,7 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
             if own is not None and own not in planned and _has_files(own):
                 g.keep(own, "memory appeared since planning; re-run to merge it")
                 continue
-            if not any(s.clone == clone and s.path in g.kept_paths for s in g.sources):
+            if not any(clone in s.all_clones and s.path in g.kept_paths for s in g.sources):
                 _redirect(g, clone, path, data[SETTING])
                 if clone in g.redirected:
                     redirected_now[clone] = (path, data[SETTING])
@@ -750,13 +778,14 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
                 _unredirect(g, clone, path, target)
                 del redirected_now[clone]
         for src in g.archivable():
-            if src.clone is not None and (read_settings(src.clone / SETTINGS_FILE)[0] or {}).get(SETTING) != g.target:
+            if any((read_settings(c / SETTINGS_FILE)[0] or {}).get(SETTING) != g.target for c in src.all_clones):
                 g.keep(src.path, "its clone no longer reads the shared directory")
                 continue
             if src.changed():
                 g.keep(src.path, "changed since planning; re-run to merge it")
-                if src.clone in redirected_now:
-                    _unredirect(g, src.clone, *redirected_now[src.clone])
+                for c in src.all_clones:
+                    if c in redirected_now:
+                        _unredirect(g, c, *redirected_now[c])
                 continue
             target = src.path.with_name(f"memory.merged-{stamp}")
             n = 1
