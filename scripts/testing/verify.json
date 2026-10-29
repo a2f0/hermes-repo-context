@@ -1,0 +1,57 @@
+{
+  "label": "verify",
+  "steps": [
+    {
+      "label": "lint",
+      "command": [
+        "uv",
+        "run",
+        "ruff",
+        "check"
+      ]
+    },
+    {
+      "label": "format",
+      "command": [
+        "uv",
+        "run",
+        "ruff",
+        "format",
+        "--check"
+      ]
+    },
+    {
+      "label": "tests",
+      "command": [
+        "uv",
+        "run",
+        "pytest"
+      ]
+    },
+    {
+      "label": "scripts",
+      "command": [
+        "bun",
+        "run",
+        "lint:scripts"
+      ]
+    },
+    {
+      "label": "binaries",
+      "command": [
+        "bun",
+        "run",
+        "lint:binary-files",
+        "--all"
+      ]
+    },
+    {
+      "label": "agents",
+      "command": [
+        "bun",
+        "run",
+        "agents:check"
+      ]
+    }
+  ]
+}

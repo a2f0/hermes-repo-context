@@ -1,0 +1,27 @@
+{
+  "name": "hermes-repo-context-tools",
+  "private": true,
+  "description": "Agent workflow tooling for the hermes-repo-context plugin",
+  "packageManager": "bun@1.4.3",
+  "engines": {
+    "bun": ">=1.4.3"
+  },
+  "scripts": {
+    "agent-tool": "agent-tool",
+    "agent:run": "agent-tool run",
+    "agent:logs": "agent-tool logs",
+    "agents:sync": "bun run agent-tool skills install --apply && bun run agent-tool permissions install --apply",
+    "agents:check": "bun run agent-tool skills check && bun run agent-tool permissions check",
+    "hooks:install": "agent-tool hooks install --apply",
+    "hooks:check": "agent-tool hooks check",
+    "lint:branch-name": "agent-tool branch check",
+    "lint:commit-message": "agent-tool commits check --message-file",
+    "lint:commit-trust": "agent-tool commits check",
+    "lint:binary-files": "agent-tool checks binaries",
+    "lint:scripts": "shellcheck --shell=sh scripts/git/hooks/commit-msg scripts/git/hooks/pre-commit scripts/git/hooks/pre-push",
+    "check": "agent-tool run-group scripts/testing/verify.json"
+  },
+  "devDependencies": {
+    "@a2f0/agent-tool": "0.1.28"
+  }
+}

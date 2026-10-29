@@ -1,0 +1,58 @@
+#!/bin/sh
+set -eu
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+# A copied hook must match the checked-out version before it can gate a push.
+if ! cmp -s "$0" "$REPO_ROOT/scripts/git/hooks/pre-push"; then
+  echo "Error: pre-push hook is stale. Run bun run hooks:install." >&2
+  exit 1
+fi
+cd "$REPO_ROOT"
+bun run --silent hooks:check
+
+zero_sha="0000000000000000000000000000000000000000"
+remote_name=${1:-origin}
+refs_file=$(mktemp)
+trap 'rm -f "$refs_file"' EXIT
+trap 'exit 1' HUP INT TERM
+
+if [ -t 0 ]; then
+  : >"$refs_file"
+else
+  cat >"$refs_file"
+fi
+
+# A URL push has no named remote-tracking namespace to exclude.
+named_remote=false
+if git remote get-url "$remote_name" >/dev/null 2>&1; then
+  named_remote=true
+fi
+
+bun run --silent lint:branch-name --pre-push <"$refs_file"
+
+while read -r _ local_sha _ remote_sha; do
+  [ "$local_sha" != "$zero_sha" ] || continue
+
+  # Check unpublished commits even when updating an existing remote branch.
+  # Mainline commits merged into the branch have already passed their own gate.
+  set -- --range "$local_sha"
+  if [ "$remote_sha" != "$zero_sha" ]; then
+    set -- "$@" --exclude "$remote_sha"
+  fi
+  if [ "$named_remote" = true ]; then
+    set -- "$@" --exclude-remotes "$remote_name"
+  elif [ "$remote_sha" = "$zero_sha" ]; then
+    set -- "$@" --exclude main
+  fi
+  bun run --silent lint:commit-trust "$@" </dev/null
+
+  if [ "$remote_sha" = "$zero_sha" ]; then
+    range="main..$local_sha"
+  else
+    range="$remote_sha..$local_sha"
+  fi
+  bun run --silent lint:binary-files --range "$range" </dev/null
+done <"$refs_file"
+
+bun run --silent check

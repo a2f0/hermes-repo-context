@@ -1,0 +1,5 @@
+{
+  "required": ["lint", "test"],
+  "allowSkipped": [],
+  "conditional": []
+}

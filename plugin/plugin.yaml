@@ -1,0 +1,7 @@
+name: repo-context
+version: "0.1.0"
+description: >-
+  Keys Hermes's repository learning by Git remote instead of checkout path:
+  names each session's remote (owner/repo) and its repo skill, trusts clones of
+  matrix-managed repositories, and shares Claude Code auto memory per remote.
+author: a2f0
