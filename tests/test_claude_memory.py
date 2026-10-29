@@ -813,3 +813,28 @@ def test_alias_naming_the_checkouts_own_repository_completes_in_one_apply(env: d
     assert (plans[0].dest / "b.md").read_text() == "b"
     two = json.loads((env["two"] / ".claude" / "settings.local.json").read_text())
     assert two["autoMemoryDirectory"] == SHARED
+
+
+def test_claimant_worktrees_are_watched_and_redirected(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    main = make_clone(home / "github" / "wt", URL)
+    git = ["git", "-C", str(main), "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+    (main / ".gitignore").write_text(".claude/settings.local.json\n")
+    subprocess.run([*git, "add", ".gitignore"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "init"], check=True)
+    hidden = (main / ".claude" / "worktrees" / "agent").resolve()
+    subprocess.run([*git, "worktree", "add", "-q", str(hidden)], check=True)
+    key = cm.path_key(str(main))
+    memory = claude / "projects" / key / "memory"
+    memory.mkdir(parents=True)
+    (memory / "a.md").write_text("a")
+    found = {str(main): {"url": URL, "identity": "a2f0/demo", "reused": True}}
+    plans = cm.plan(found, claude_home=claude, home=home, aliases={key: "a2f0/old"}, only=["a2f0/old"])
+    assert cm.busy_clones(plans, {hidden}) == [main, hidden]
+    plans = cm.plan(found, claude_home=claude, home=home, aliases={key: "a2f0/old"})
+    cm.apply(plans, today="2026-10-29")
+    assert (claude / "repo-memory" / "a2f0" / "old" / "a.md").read_text() == "a"
+    for clone in (main, hidden):
+        settings = json.loads((clone / ".claude" / "settings.local.json").read_text())
+        assert settings["autoMemoryDirectory"] == "~/.claude/repo-memory/a2f0/demo"

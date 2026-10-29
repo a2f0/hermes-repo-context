@@ -488,7 +488,10 @@ def plan(
             info = {**info, "reused": False}
         claimed = key in alias_keys and alias_subs[key] != memory_subpath(info["identity"])
         if claimed:
-            claimants.setdefault(projects / key / "memory", []).append(Path(path))
+            watchers = claimants.setdefault(projects / key / "memory", [])
+            for tree in [Path(path), *registered_worktrees(Path(path))]:
+                if tree not in watchers:
+                    watchers.append(tree)
         reused = bool(info.get("reused")) and not claimed
         entries.append(
             (info["identity"], Source(projects / key / "memory", Path(path)), info.get("url"), reused, claimed)
@@ -536,8 +539,11 @@ def plan(
             stale.setdefault(sub, []).append((src.path, "its clone's remote no longer matches the cache; re-run sync"))
             continue
         if claimed:
-            clones[sub].append(src.clone)
-            claims.setdefault(sub, {})[src.clone] = src.path
+            # The checkout and every worktree of it read the claimed directory today.
+            for tree in [src.clone, *registered_worktrees(src.clone)]:
+                if tree not in clones[sub]:
+                    clones[sub].append(tree)
+                claims.setdefault(sub, {})[tree] = src.path
             continue
         if users[src.path] > 1:
             stale.setdefault(sub, []).append(
