@@ -49,7 +49,9 @@ section in their system prompt.
   clone's `.claude/settings.local.json` (only where Git ignores that file), and
   then renames each merged source to `memory.merged-<date>`. A source stays in
   place when a file in it differs from the shared copy, it holds a symlink, or
-  its clone could not be redirected. It is a dry run until `--apply`;
+  its clone could not be redirected. Close Claude Code sessions in those clones
+  before `--apply`: a write that races with one is detected and retried, and
+  anything not merged stays in place. It is a dry run until `--apply`;
   `--alias=<project-key>=owner/repo` (with `=`, since project keys start with
   `-`) merges memory whose checkout is gone. A
   symlinked memory directory does not work, because Claude Code resolves the

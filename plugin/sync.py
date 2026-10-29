@@ -97,9 +97,12 @@ def managed_identities(checkouts: dict[str, dict[str, str]], trusted_paths: set[
         if path in trusted_paths and manifest.is_file():
             managed.add(info["identity"])
             try:
-                managed.update(json.loads(manifest.read_text()).get("repos") or [])
-            except ValueError:
+                data = json.loads(manifest.read_text())
+            except (OSError, ValueError):
                 continue
+            repos = data.get("repos") if isinstance(data, dict) else None
+            if isinstance(repos, list):
+                managed.update(r for r in repos if isinstance(r, str) and ident.valid_identity(r))
     return managed
 
 

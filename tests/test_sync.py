@@ -126,3 +126,13 @@ def test_trust_names_follow_renames(workspace: dict[str, Path]) -> None:
     )
     assert result.managed == {"a2f0/balebase"}
     assert set(result.trusted_added) == {str(workspace["balebase"]), str(workspace["balebase2"])}
+
+
+@pytest.mark.parametrize("manifest", ["[]", '{"repos": [1, "a2f0/balebase", "bad name"]}', '{"repos": "x"}', "{"])
+def test_malformed_manifests_do_not_abort_sync(workspace: dict[str, Path], manifest: str) -> None:
+    (workspace["matrix"] / "matrix.json").write_text(manifest)
+    result = sync_mod.sync(
+        [workspace["root"]], trust_store=FakeTrust([str(workspace["matrix"])]), canonical=FakeGitHub()
+    )
+    assert "a2f0/matrix" in result.managed
+    assert result.managed <= {"a2f0/matrix", "a2f0/balebase"}

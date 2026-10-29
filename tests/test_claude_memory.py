@@ -520,3 +520,41 @@ def test_alias_only_run_needs_no_cached_clones(capsys: pytest.CaptureFixture[str
 
 def test_dot_github_memory_directory() -> None:
     assert cm.memory_subpath("a2f0/.github") == PurePosixPath("a2f0/.github")
+
+
+def test_merge_index_keeps_fenced_blocks_whole() -> None:
+    current = ["## A", "```", "one", "```"]
+    incoming = ["## A", "```", "two", "```", "```", "one", "```"]
+    merged, added = cm.merge_index(current, incoming)
+    assert merged == ["## A", "```", "one", "```", "```", "two", "```"]
+    assert added == 3
+    assert cm.merge_index(merged, incoming)[1] == 0
+
+
+def test_replace_if_unchanged(tmp_path: Path) -> None:
+    (tmp_path / "dir").mkdir()
+    path = tmp_path / "dir" / "MEMORY.md"
+    path.write_text("a")
+    assert not cm._replace_if_unchanged(path, "new", b"b")
+    assert path.read_text() == "a"
+    assert cm._replace_if_unchanged(path, "new", b"a")
+    assert path.read_text() == "new"
+    assert sorted(p.name for p in path.parent.iterdir()) == ["MEMORY.md"]
+
+
+def test_index_written_by_a_session_during_apply_is_merged_not_lost(env: dict[str, Path], monkeypatch) -> None:
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    real = cm._replace_if_unchanged
+    calls = []
+
+    def session_writes_first(path, text, before):
+        if path.name == "MEMORY.md" and not calls:
+            calls.append(1)
+            path.write_text("- [S](s.md) — written by a running session\n")
+        return real(path, text, before)
+
+    monkeypatch.setattr(cm, "_replace_if_unchanged", session_writes_first)
+    cm.apply(plans, today="2026-10-29")
+    index = (plans[0].dest / "MEMORY.md").read_text().splitlines()
+    assert index[0] == "- [S](s.md) — written by a running session"
+    assert "- [B](b.md) — b" in index

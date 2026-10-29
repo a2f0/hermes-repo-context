@@ -17,9 +17,11 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 import urllib.parse
 from collections import Counter
 from collections.abc import Iterable
@@ -72,40 +74,64 @@ _SECTION_RE = re.compile(r"^#{2,6}\s")
 _LINK_RE = re.compile(r"\]\(([^)\s]+)\)")
 
 
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+
+
 def _sections(lines: list[str]) -> list[tuple[str | None, list[str]]]:
     """An index split at its ``##``-and-deeper headings; ``None`` holds what precedes the first.
-    A ``#`` title is ordinary text, so every index's title section lines up."""
+    A ``#`` title is ordinary text, so every index's title section lines up. Each body is a list
+    of units: a line, or a whole fenced block (its lines joined by newlines), so merging never
+    splits a block."""
     sections: list[tuple[str | None, list[str]]] = [(None, [])]
-    for line in lines:
-        if _SECTION_RE.match(line):
+    fence: str | None = None
+    block: list[str] = []
+    for raw in lines:
+        line = raw.rstrip("\n")
+        if fence is not None:
+            block.append(line)
+            if line.strip().startswith(fence):
+                sections[-1][1].append("\n".join(block))
+                fence, block = None, []
+            continue
+        m = _FENCE_RE.match(line)
+        if m:
+            fence, block = m.group(1), [line]
+        elif _SECTION_RE.match(line):
             sections.append((line.rstrip(), []))
         else:
-            sections[-1][1].append(line.rstrip("\n"))
+            sections[-1][1].append(line)
+    if block:  # an unclosed fence runs to the end
+        sections[-1][1].append("\n".join(block))
     return sections
 
 
+def _unit_key(unit: str) -> str:
+    return "\n".join(part.strip() for part in unit.split("\n")).strip()
+
+
 def merge_index(current: list[str], incoming: list[str]) -> tuple[list[str], int]:
-    """*current* with the lines of *incoming* it lacks, each under the heading it had in
-    *incoming* (a heading *current* lacks is appended with its lines), and how many lines that
-    added. Lines are compared as multisets within a section, so repeated lines such as code fences
-    and an entry filed under two headings survive. Existing lines keep their order and form."""
+    """*current* with the units of *incoming* it lacks, each under the heading it had in
+    *incoming* (a heading *current* lacks is appended with its units), and how many lines that
+    added. Units are lines and whole fenced blocks, compared as multisets within a section, so
+    blocks stay intact and an entry filed under two headings survives. Existing lines keep their
+    order and form."""
     sections = _sections(current)
     added = 0
-    for heading, lines in _sections(incoming):
+    for heading, units in _sections(incoming):
         body = next((b for h, b in sections if h == heading), None)
-        have = Counter(line.strip() for line in body or [] if line.strip())
+        have = Counter(_unit_key(u) for u in body or [] if _unit_key(u))
         seen: Counter[str] = Counter()
         new = []
-        for line in lines:
-            text = line.strip()
-            if not text:
+        for unit in units:
+            key = _unit_key(unit)
+            if not key:
                 continue
-            seen[text] += 1
-            if seen[text] > have[text]:
-                new.append(line)
+            seen[key] += 1
+            if seen[key] > have[key]:
+                new.append(unit)
         if not new:
             continue
-        added += len(new)
+        added += sum(unit.count("\n") + 1 for unit in new)
         if body is None:
             last = sections[-1][1]
             if last and last[-1].strip():
@@ -121,7 +147,8 @@ def merge_index(current: list[str], incoming: list[str]) -> tuple[list[str], int
     for heading, body in sections:
         if heading is not None:
             out.append(heading)
-        out.extend(body)
+        for unit in body:
+            out.extend(unit.split("\n"))
     return out, added
 
 
@@ -415,16 +442,37 @@ def plan(
     return plans
 
 
+def _replace_if_unchanged(path: Path, text: str, before: bytes | None) -> bool:
+    """Write *text* to *path* atomically, but only if *path* still holds *before* (None: absent)
+    once the new content is ready; False when a running session changed it meanwhile."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w") as out:
+            out.write(text)
+        now = path.read_bytes() if path.is_file() else None
+        if now != before:
+            os.unlink(tmp)
+            return False
+        os.replace(tmp, path)
+        return True
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
 def _write_index(g: GroupPlan) -> None:
-    """Append the planned index lines to the shared index as it is now, so lines a running
-    session added since planning survive."""
+    """Merge the planned index lines into the shared index as it is now, retrying when a running
+    session writes it meanwhile; if it keeps changing, the sources stay in place (``_merged``)."""
     index = g.dest / INDEX
-    current = index.read_text().splitlines() if index.is_file() else []
     # Entries for copies that failed at apply time stay behind with their source.
     planned = [line for line in g.index if not (link_targets(line) & g.failed_rels)]
-    merged, added = merge_index(current, planned)
-    if added:
-        _atomic_write(index, "\n".join(merged) + "\n")
+    for _attempt in range(5):
+        before = index.read_bytes() if index.is_file() else None
+        current = before.decode(errors="replace").splitlines() if before is not None else []
+        merged, added = merge_index(current, planned)
+        if not added or _replace_if_unchanged(index, "\n".join(merged) + "\n", before):
+            return
 
 
 def _keep_clone(g: GroupPlan, clone: Path, reason: str) -> None:
@@ -436,6 +484,7 @@ def _keep_clone(g: GroupPlan, clone: Path, reason: str) -> None:
 def _redirect(g: GroupPlan, clone: Path, path: Path, target: str) -> None:
     """Point *clone* at the shared directory, re-reading its settings now so changes made since
     planning (permissions, or this very setting) are kept rather than replaced."""
+    before = path.read_bytes() if path.is_file() and not path.is_symlink() else None
     data, note = read_settings(path)
     if data is None:
         _keep_clone(g, clone, f"its settings changed since planning: {note}")
@@ -446,9 +495,12 @@ def _redirect(g: GroupPlan, clone: Path, path: Path, target: str) -> None:
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(path, json.dumps({**data, SETTING: target}, indent=2) + "\n")
+        written = _replace_if_unchanged(path, json.dumps({**data, SETTING: target}, indent=2) + "\n", before)
     except OSError as exc:
         _keep_clone(g, clone, f"writing its settings failed: {exc}")
+        return
+    if not written:
+        _keep_clone(g, clone, "its settings changed while being written; re-run")
         return
     g.redirected.add(clone)
 
