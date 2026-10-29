@@ -19,7 +19,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 import urllib.parse
@@ -66,11 +65,12 @@ def project_root(clone: Path) -> Path:
 
 def registered_worktrees(clone: Path) -> list[Path]:
     """Every existing worktree of *clone*'s repository, the main checkout included."""
-    out = git(clone, "worktree", "list", "--porcelain") or ""
+    # -z: NUL-separated fields, so a path with quotes or newlines arrives verbatim.
+    out = git(clone, "worktree", "list", "--porcelain", "-z") or ""
     trees = []
-    for line in out.splitlines():
-        if line.startswith("worktree "):
-            tree = Path(line[len("worktree ") :]).resolve()
+    for field_ in out.split("\0"):
+        if field_.startswith("worktree "):
+            tree = Path(field_[len("worktree ") :]).resolve()
             if tree.is_dir():
                 trees.append(tree)
     return trees
@@ -625,6 +625,15 @@ def _replace_if_unchanged(path: Path, text: str, before: bytes | None) -> bool:
         raise
 
 
+def _private_dirs(base: Path, path: Path) -> None:
+    """Create *path* and each missing directory between *base* and it as ``0700``."""
+    current = base
+    for part in path.relative_to(base).parts:
+        current = current / part
+        with contextlib.suppress(FileExistsError):
+            current.mkdir(mode=0o700)
+
+
 def _write_index(g: GroupPlan) -> None:
     """Merge the planned index lines into the shared index as it is now, retrying when a running
     session writes it meanwhile; if it keeps changing, the sources stay in place (``_merged``)."""
@@ -691,8 +700,11 @@ def _copy(g: GroupPlan, src_dir: Path, f: Path, rel: PurePosixPath) -> None:
         failed("the source file changed since planning")
         return
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with open(target, "xb") as out:  # never overwrite a file written since planning
+        _private_dirs(g.dest, target.parent)
+        # Exclusive: never overwrite a file written since planning. Private: the source may have
+        # been readable only by its owner.
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as out:
             out.write(content)
     except FileExistsError:
         if not target.is_file() or target.is_symlink() or target.read_bytes() != content:
@@ -701,7 +713,8 @@ def _copy(g: GroupPlan, src_dir: Path, f: Path, rel: PurePosixPath) -> None:
     except OSError:  # a file where a directory is needed, or the reverse
         failed("a file and a directory share a name")
         return
-    shutil.copystat(f, target)
+    st = f.stat()
+    os.utime(target, ns=(st.st_atime_ns, st.st_mtime_ns))
 
 
 def _unredirect(g: GroupPlan, clone: Path, path: Path, target: str) -> None:
@@ -776,7 +789,7 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
     for g in sorted(plans, key=lambda g: not g.watch):
         if g.blocked or _dest_problem(g.root, g.dest):
             continue
-        g.dest.mkdir(parents=True, exist_ok=True)
+        _private_dirs(g.root.parent, g.dest)
         for src_dir, f, rel in g.copies:
             _copy(g, src_dir, f, rel)
         _write_index(g)

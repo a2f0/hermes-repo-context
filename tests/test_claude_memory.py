@@ -841,3 +841,28 @@ def test_claimant_worktrees_are_watched_and_redirected(tmp_path: Path) -> None:
     for clone in (main, hidden):
         settings = json.loads((clone / ".claude" / "settings.local.json").read_text())
         assert settings["autoMemoryDirectory"] == "~/.claude/repo-memory/a2f0/demo"
+
+
+def test_shared_memory_is_private(env: dict[str, Path]) -> None:
+    import stat
+
+    cm.apply(cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"]), today="2026-10-29")
+    root = env["claude"] / "repo-memory"
+    for d in (root, root / "a2f0", root / "a2f0" / "demo", root / "a2f0" / "demo" / "notes"):
+        assert stat.S_IMODE(d.stat().st_mode) == 0o700, d
+    for f in (
+        root / "a2f0" / "demo" / "a.md",
+        root / "a2f0" / "demo" / "notes" / "n.md",
+        root / "a2f0" / "demo" / "MEMORY.md",
+    ):
+        assert stat.S_IMODE(f.stat().st_mode) == 0o600, f
+
+
+def test_worktree_paths_needing_quotes_are_found(tmp_path: Path) -> None:
+    main = make_clone(tmp_path / "wt", URL)
+    git = ["git", "-C", str(main), "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    odd = (tmp_path / "line\nbreak").resolve()
+    subprocess.run([*git, "worktree", "add", "-q", "--detach", str(odd)], check=True)
+    # Line-based porcelain splits this path; -z keeps it whole.
+    assert cm.registered_worktrees(main) == [main, odd]
