@@ -69,6 +69,14 @@ def test_repo_skill_names_pass_hermess_skill_linter(identity: str, hermes_home: 
     assert alternate and alternate != name and HERMES_LINTED_NAME_RE.fullmatch(alternate)
 
 
+def test_fallback_name_over_hermess_limit_is_not_offered(hermes_home: Path) -> None:
+    identity = "a2f0/" + "x" * 59  # the flat name has 64 characters, the fallback 65
+    taken = hermes_home / "skills" / "repos" / ("a2f0-" + "x" * 59) / "SKILL.md"
+    taken.parent.mkdir(parents=True)
+    taken.write_text("Use when working in a clone of someone/else.")
+    assert ident.repo_skill(identity) == (None, None)
+
+
 def test_dotted_skill_from_before_0_2_still_counts(hermes_home: Path) -> None:
     legacy = hermes_home / "skills" / "repos" / "a2f0-a2f0.net" / "SKILL.md"
     legacy.parent.mkdir(parents=True)

@@ -228,7 +228,7 @@ def repo_skill(identity: str) -> tuple[str | None, Path | None]:
             return candidate, path
     if found[name] is None:
         return name, None
-    if alternate in found and found[alternate] is None:
+    if _valid_skill_name(alternate) and found[alternate] is None:
         return alternate, None  # the flat name belongs to another repository
     return None, None
 
