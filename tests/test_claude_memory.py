@@ -67,7 +67,7 @@ def test_plan_and_apply_merge_by_remote(env: dict[str, Path]) -> None:
     g = plans[0]
     assert g.dest == env["claude"] / "repo-memory" / "a2f0" / "demo"
     assert sorted(str(rel) for _, _, rel in g.copies) == ["a.md", "b.md", "c.md", "notes/n.md"]
-    assert g.index == ["# Memory Index", "- [A](a.md) — a", "- [B](b.md) — b", "- [C](c.md) — c"]
+    assert g.index == ["# Memory Index", "", "- [A](a.md) — a", "- [B](b.md) — b", "- [C](c.md) — c"]
     assert len(g.settings_changes) == 2
     assert g.kept == []
 
@@ -681,3 +681,20 @@ def test_symlinked_user_settings_are_read(env: dict[str, Path], tmp_path: Path) 
     assert plans[0].blocked == "the user settings cannot be read; left alone"
     dotfiles.write_text(json.dumps({"theme": "dark"}))
     assert not cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])[0].blocked
+
+
+def test_merge_index_keeps_blank_lines_that_shape_markdown() -> None:
+    incoming = ["- [A](a.md)", "", "    indented code", "", "Paragraph."]
+    merged, added = cm.merge_index([], incoming)
+    assert merged == incoming
+    assert cm.merge_index(merged, incoming)[1] == 0
+    assert cm.merge_index(["code"], ["    code"])[1] == 1
+
+
+def test_busy_check_survives_only_filtering_an_aliased_clone(env: dict[str, Path]) -> None:
+    key = cm.path_key(str(env["two"]))
+    plans = cm.plan(
+        checkouts(env), claude_home=env["claude"], home=env["home"], aliases={key: "a2f0/old"}, only=["a2f0/old"]
+    )
+    assert [g.identity for g in plans] == ["a2f0/old"]
+    assert cm.busy_clones(plans, {env["two"].resolve()}) == [env["two"]]

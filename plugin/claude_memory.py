@@ -113,9 +113,12 @@ def _sections(lines: list[str]) -> list[tuple[tuple[str, ...], list[str]]]:
 
 
 def _unit_key(unit: str) -> str:
-    """A line compares without surrounding space; a fenced block keeps its indentation."""
+    """A line compares without surrounding space unless it is indented code (a tab or four
+    spaces); a fenced block keeps its indentation."""
     if "\n" in unit:
         return "\n".join(part.rstrip() for part in unit.split("\n"))
+    if unit.startswith(("\t", "    ")):
+        return unit.rstrip()
     return unit.strip()
 
 
@@ -152,14 +155,21 @@ def merge_index(current: list[str], incoming: list[str]) -> tuple[list[str], int
         body = sections[idx][1]
         have = Counter(_unit_key(u) for u in body if _unit_key(u))
         seen: Counter[str] = Counter()
-        new = []
+        new: list[str] = []
+        gap = False  # a blank line separates this unit from the previous one in *incoming*
         for unit in units:
             key = _unit_key(unit)
             if not key:
+                gap = True
                 continue
             seen[key] += 1
             if seen[key] > have[key]:
+                # Keep the blank line before a new unit: Markdown reads paragraphs, lists, and
+                # indented code differently without it.
+                if gap and (new or (body and body[-1].strip())):
+                    new.append("")
                 new.append(unit)
+            gap = False
         if not new:
             continue
         added += sum(unit.count("\n") + 1 for unit in new)
@@ -230,6 +240,7 @@ class GroupPlan:
     clone_sources: dict[Path, Path] = field(default_factory=dict)  # clone -> its memory directory
     target: str = ""  # the autoMemoryDirectory value that points at dest
     clones: list[Path] = field(default_factory=list)  # every clone of this repository
+    watch: set[Path] = field(default_factory=set)  # other clones whose memory directory is a source
     failed_rels: set[PurePosixPath] = field(default_factory=set)  # copies that failed at apply time
     conflicts: list[Path] = field(default_factory=list)
     skipped: list[Path] = field(default_factory=list)
@@ -424,10 +435,13 @@ def plan(
     # names the owner of a memory directory explicitly, so it claims that directory from any
     # checkout that maps to it; the checkout itself can still be redirected.
     alias_keys = set(aliases or {})
+    claimants: dict[Path, list[Path]] = {}  # aliased memory directory -> clones that map to it
     entries = []
     for path, info in checkouts.items():
         key = path_key(path)
         claimed = key in alias_keys
+        if claimed:
+            claimants.setdefault(projects / key / "memory", []).append(Path(path))
         reused = bool(info.get("reused")) and not claimed
         entries.append(
             (info["identity"], Source(projects / key / "memory", Path(path)), info.get("url"), reused, claimed)
@@ -489,6 +503,7 @@ def plan(
         g.clone_sources = {s.clone: s.path for s in sources[sub] if s.clone is not None}
         g.target = display(dest, home)
         g.clones = list(clones[sub])
+        g.watch = {c for s in sources[sub] for c in claimants.get(s.path, [])}
         for path, reason in stale.get(sub, []):
             g.keep(path, reason)
         # A clone whose memory directory is a symlink is not merged, so it must not be redirected.
@@ -646,7 +661,7 @@ def busy_clones(plans: list[GroupPlan], live: set[Path]) -> list[Path]:
     Claude Code does not lock its memory files, so ``apply`` needs those sessions closed."""
     busy = set()
     for g in plans:
-        for clone in {*g.clone_sources, *g.clones}:
+        for clone in {*g.clone_sources, *g.clones, *g.watch}:
             real = clone.resolve()
             if any(d == real or real in d.parents for d in live):
                 busy.add(clone)
