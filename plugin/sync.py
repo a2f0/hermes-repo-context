@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Protocol
 
 from . import identity as ident
+from .claude_memory import path_key
 
 
 class TrustStore(Protocol):
@@ -123,12 +124,13 @@ def sync(
         for k, v in (cache.get("names") or {}).items()
         if isinstance(k, str) and ident.valid_identity(k) and isinstance(v, str) and ident.valid_identity(v)
     }
-    # Every repository seen at each path, kept even across --refresh: a path reused for another
-    # repository holds memory that belongs to neither on its own.
+    # Every repository seen at each Claude Code project key (paths such as foo-bar and foo_bar
+    # share one), kept even across --refresh and after a clone is deleted: memory under a key
+    # that held another repository belongs to neither on its own.
     history: dict[str, list[str]] = {
-        path: [i for i in seen if isinstance(i, str) and ident.valid_identity(i)]
-        for path, seen in (ident.load_cache().get("history") or {}).items()
-        if isinstance(path, str) and isinstance(seen, list)
+        key: [i for i in seen if isinstance(i, str) and ident.valid_identity(i)]
+        for key, seen in (ident.load_cache().get("history") or {}).items()
+        if isinstance(key, str) and isinstance(seen, list)
     }
     result = SyncResult()
 
@@ -151,7 +153,7 @@ def sync(
         if not ident.valid_identity(identity):
             identity = current_name(parsed)
         result.urls[url] = identity
-        seen = history.setdefault(str(clone), [])
+        seen = history.setdefault(path_key(str(clone)), [])
         if not any(ident.identity_key(current_name(s)) == ident.identity_key(identity) for s in seen):
             seen.append(identity)
         info: dict = {"url": url, "identity": identity}

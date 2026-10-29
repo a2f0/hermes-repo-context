@@ -376,43 +376,52 @@ def plan(
     clones: dict[PurePosixPath, list[Path]] = {}
     sources: dict[PurePosixPath, list[Source]] = {}
     stale: dict[PurePosixPath, list[tuple[Path, str]]] = {}
-    # Live clones first, so their index lines lead the merged MEMORY.md; then aliases.
-    entries = [
-        (
-            info["identity"],
-            Source(projects / path_key(path) / "memory", Path(path)),
-            info.get("url"),
-            bool(info.get("reused")),
+    # Live clones first, so their index lines lead the merged MEMORY.md; then aliases. An alias
+    # names the owner of a memory directory explicitly, so it claims that directory from any
+    # checkout that maps to it; the checkout itself can still be redirected.
+    alias_keys = set(aliases or {})
+    entries = []
+    for path, info in checkouts.items():
+        key = path_key(path)
+        claimed = key in alias_keys
+        reused = bool(info.get("reused")) and not claimed
+        entries.append(
+            (info["identity"], Source(projects / key / "memory", Path(path)), info.get("url"), reused, claimed)
         )
-        for path, info in checkouts.items()
-    ]
     entries += [
-        (identity, Source(projects / key / "memory", None), None, False) for key, identity in (aliases or {}).items()
+        (identity, Source(projects / key / "memory", None), None, False, False)
+        for key, identity in (aliases or {}).items()
     ]
     # Claude Code's project key folds every non-alphanumeric character to "-", so foo-bar and
     # foo_bar share one memory directory; such a directory belongs to no single clone.
     users: dict[Path, int] = {}
-    for _identity, src, _url, _reused in entries:
-        users[src.path] = users.get(src.path, 0) + 1
-    for identity, src, url, reused in entries:
+    for _identity, src, _url, _reused, claimed in entries:
+        if not claimed:
+            users[src.path] = users.get(src.path, 0) + 1
+    for identity, src, url, reused, claimed in entries:
         sub = memory_subpath(identity)
         if sub is None:
             continue
         names.setdefault(sub, identity)
         clones.setdefault(sub, [])
         sources.setdefault(sub, [])
-        if users[src.path] > 1:
-            stale.setdefault(sub, []).append((src.path, "Claude Code shares this directory with another path"))
-            continue
         # The cache can be older than the checkout: a path reused for another repository must
         # not pour its memory into the cached one.
+        if src.clone is not None and (not url or remote_url(src.clone) != url):
+            stale.setdefault(sub, []).append((src.path, "its clone's remote no longer matches the cache; re-run sync"))
+            continue
+        if claimed:
+            clones[sub].append(src.clone)
+            continue
+        if users[src.path] > 1:
+            stale.setdefault(sub, []).append(
+                (src.path, "Claude Code shares this directory with another path; assign it with --alias")
+            )
+            continue
         if reused:
             stale.setdefault(sub, []).append(
                 (src.path, "this path has held another repository; assign its memory with --alias")
             )
-            continue
-        if src.clone is not None and (not url or remote_url(src.clone) != url):
-            stale.setdefault(sub, []).append((src.path, "its clone's remote no longer matches the cache; re-run sync"))
             continue
         sources[sub].append(src)
         if src.clone is not None:

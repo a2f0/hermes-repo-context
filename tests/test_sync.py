@@ -150,3 +150,15 @@ def test_reused_path_is_marked_but_a_rename_is_not(workspace: dict[str, Path]) -
     assert "reused" not in result.checkouts[str(workspace["balebase"])]
     result = sync_mod.sync([workspace["root"]], refresh=True, trust_store=FakeTrust([]), canonical=FakeGitHub())
     assert result.checkouts[clone].get("reused") is True
+
+
+def test_project_key_history_survives_a_deleted_clone(tmp_path: Path) -> None:
+    import shutil
+
+    root = tmp_path / "src"
+    make_clone(root / "foo-bar", "git@github.com:a2f0/first.git")
+    sync_mod.sync([root], trust_store=FakeTrust([]), canonical=FakeGitHub())
+    shutil.rmtree(root / "foo-bar")
+    second = make_clone(root / "foo_bar", "git@github.com:a2f0/second.git")
+    result = sync_mod.sync([root], trust_store=FakeTrust([]), canonical=FakeGitHub())
+    assert result.checkouts[str(second)].get("reused") is True

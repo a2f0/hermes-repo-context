@@ -630,3 +630,18 @@ def test_user_or_project_memory_setting_is_respected(env: dict[str, Path]) -> No
     assert plans[0].blocked.startswith("autoMemoryDirectory is set in the user settings")
     cm.apply(plans, today="2026-10-29")
     assert source(env, "one").is_dir()
+
+
+def test_alias_assigns_a_reused_paths_memory(env: dict[str, Path]) -> None:
+    found = checkouts(env)
+    found[str(env["two"])]["reused"] = True
+    key = cm.path_key(str(env["two"]))
+    plans = cm.plan(found, claude_home=env["claude"], home=env["home"], aliases={key: "a2f0/old"})
+    by_identity = {g.identity: g for g in plans}
+    assert [s.path for s in by_identity["a2f0/old"].sources] == [source(env, "two")]
+    assert source(env, "two") not in by_identity["a2f0/demo"].kept_paths
+    cm.apply(plans, today="2026-10-29")
+    assert (env["claude"] / "repo-memory" / "a2f0" / "old" / "b.md").read_text() == "b"
+    assert not source(env, "two").exists()
+    two = json.loads((env["two"] / ".claude" / "settings.local.json").read_text())
+    assert two["autoMemoryDirectory"] == SHARED
