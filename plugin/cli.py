@@ -43,7 +43,10 @@ def setup(parser: argparse.ArgumentParser) -> None:
         action="append",
         default=[],
         metavar="KEY=OWNER/REPO",
-        help="merge a memory dir whose checkout is gone, e.g. -Users-me-github-old=me/new; repeatable",
+        help=(
+            "merge a memory dir whose checkout is gone; project keys start with '-', so attach the "
+            "value with '=': --alias=-Users-me-github-old=me/new; repeatable"
+        ),
     )
     c.add_argument(
         "--only", action="append", default=[], metavar="OWNER/REPO", help="limit to these remotes; repeatable"

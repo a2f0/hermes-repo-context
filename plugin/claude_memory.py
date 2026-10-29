@@ -131,6 +131,7 @@ class GroupPlan:
     providers: dict[PurePosixPath, list[Path]] = field(default_factory=dict)  # rel -> sources holding it
     digests: dict[PurePosixPath, str] = field(default_factory=dict)  # rel -> planned content hash
     clone_sources: dict[Path, Path] = field(default_factory=dict)  # clone -> its memory directory
+    target: str = ""  # the autoMemoryDirectory value that points at dest
     conflicts: list[Path] = field(default_factory=list)
     skipped: list[Path] = field(default_factory=list)
     index_before: int = 0
@@ -325,6 +326,7 @@ def plan(
         for s in g.sources:
             s.fingerprint = fingerprint(s.path)
         g.clone_sources = {s.clone: s.path for s in sources[sub] if s.clone is not None}
+        g.target = display(dest, home)
         for path, reason in stale.get(sub, []):
             g.keep(path, reason)
         # A clone whose memory directory is a symlink is not merged, so it must not be redirected.
@@ -486,6 +488,9 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
                 if clone in g.redirected:
                     redirected_now[clone] = (path, data[SETTING])
         for src in g.archivable():
+            if src.clone is not None and (read_settings(src.clone / SETTINGS_FILE)[0] or {}).get(SETTING) != g.target:
+                g.keep(src.path, "its clone no longer reads the shared directory")
+                continue
             if src.changed():
                 g.keep(src.path, "changed since planning; re-run to merge it")
                 if src.clone in redirected_now:

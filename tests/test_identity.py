@@ -146,3 +146,17 @@ def test_alternate_skill_is_found_once_the_flat_name_is_free(hermes_home: Path) 
     alt.parent.mkdir(parents=True)
     alt.write_text("Use when working in a clone of a2f0/b-c.")
     assert ident.repo_skill("a2f0/b-c") == ("a2f0--b-c", alt)
+
+
+@pytest.mark.parametrize(
+    ("url", "identity"),
+    [
+        ("git@github.com:1234/repo.git", "1234/repo"),
+        ("github.com:a2f0/x", "a2f0/x"),
+        ("ssh://git@github.com:22/a2f0/x.git", "a2f0/x"),
+        ("ssh://git@git.example.com:2222/team/app.git", "git.example.com/team/app"),
+        ("https://github.com/a2f0/x/", "a2f0/x"),
+    ],
+)
+def test_parse_remote_url_forms(url: str, identity: str) -> None:
+    assert ident.parse_remote(url) == identity

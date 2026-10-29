@@ -51,7 +51,8 @@ section in their system prompt.
   then renames each merged source to `memory.merged-<date>`. A source stays in
   place when a file in it differs from the shared copy, it holds a symlink, or
   its clone could not be redirected. It is a dry run until `--apply`;
-  `--alias <project-key>=owner/repo` merges memory whose checkout is gone. A
+  `--alias=<project-key>=owner/repo` (with `=`, since project keys start with
+  `-`) merges memory whose checkout is gone. A
   symlinked memory directory does not work, because Claude Code resolves the
   real path and refuses the write.
 - **`hermes repo-context show [path]`** prints the section a session there

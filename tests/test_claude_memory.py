@@ -428,3 +428,25 @@ def test_shared_file_removed_after_planning_keeps_the_source(env: dict[str, Path
     assert (source(env, "one") / "a.md").is_file()
     assert "autoMemoryDirectory" not in json.loads((env["one"] / ".claude" / "settings.local.json").read_text())
     assert dict(plans[0].kept)[source(env, "one")] == "the shared directory does not hold all of it"
+
+
+def test_clone_that_stopped_reading_the_shared_directory_keeps_its_memory(env: dict[str, Path]) -> None:
+    settings = env["two"] / ".claude" / "settings.local.json"
+    settings.write_text(json.dumps({"autoMemoryDirectory": SHARED}))
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    assert env["two"] in plans[0].redirected
+    settings.write_text("{}")
+    cm.apply(plans, today="2026-10-29")
+    assert (source(env, "two") / "b.md").is_file()
+    assert dict(plans[0].kept)[source(env, "two")] == "its clone no longer reads the shared directory"
+
+
+def test_alias_with_a_leading_dash_parses_when_attached() -> None:
+    import argparse
+
+    from repo_context import cli
+
+    parser = argparse.ArgumentParser()
+    cli.setup(parser)
+    args = parser.parse_args(["claude-memory", "--alias=-Users-me-github-old=me/new"])
+    assert args.alias == ["-Users-me-github-old=me/new"]

@@ -16,7 +16,10 @@ PLUGIN_NAME = "repo-context"
 SKILL_CATEGORY = "repos"
 SYNC_COMMAND = "hermes repo-context sync"
 _GIT_TIMEOUT_S = 3
-_URL_RE = re.compile(r"^(?:[a-z][a-z0-9+.-]*://)?(?:[^@/]+@)?(?P<host>[^/:]+)(?::\d+)?[:/](?P<path>.+?)(?:\.git)?/*$")
+# Scheme URLs may carry a port; SCP-style ``user@host:path`` never does, so a numeric owner
+# (``git@github.com:1234/repo``) is part of the path there.
+_SCHEME_URL_RE = re.compile(r"^[a-z][a-z0-9+.-]*://(?:[^@/]+@)?(?P<host>[^/:]+)(?::\d+)?/(?P<path>.+?)(?:\.git)?/*$")
+_SCP_URL_RE = re.compile(r"^(?:[^@/]+@)?(?P<host>[^/:]+):(?P<path>[^/].*?)(?:\.git)?/*$")
 _SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _HOST_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$")
 _SEGMENT_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
@@ -68,7 +71,8 @@ def cache_path() -> Path:
 
 def parse_remote(url: str) -> str | None:
     """``git@github.com:a2f0/x.git`` -> ``a2f0/x``; other hosts keep a ``host/`` prefix."""
-    m = _URL_RE.match((url or "").strip())
+    url = (url or "").strip()
+    m = _SCHEME_URL_RE.match(url) if "://" in url else _SCP_URL_RE.match(url)
     if not m:
         return None
     host, path = m.group("host").lower(), m.group("path").strip("/")
