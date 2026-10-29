@@ -34,7 +34,6 @@ INDEX = "MEMORY.md"
 INDEX_MAX_LINES, INDEX_MAX_BYTES = 200, 25_000
 SETTING = "autoMemoryDirectory"
 SETTINGS_FILE = ".claude/settings.local.json"
-_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
 
 
 def is_ignored(clone: Path, relative: str) -> bool:

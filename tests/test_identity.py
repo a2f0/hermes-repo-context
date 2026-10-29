@@ -159,3 +159,10 @@ def test_alternate_skill_is_found_once_the_flat_name_is_free(hermes_home: Path) 
 )
 def test_parse_remote_url_forms(url: str, identity: str) -> None:
     assert ident.parse_remote(url) == identity
+
+
+def test_dot_github_repositories_are_valid() -> None:
+    assert ident.parse_remote("git@github.com:a2f0/.github.git") == "a2f0/.github"
+    assert ident.skill_name("a2f0/.github") == "a2f0-.github"
+    assert not ident.valid_identity("a2f0/..")
+    assert not ident.valid_identity("a2f0/.")

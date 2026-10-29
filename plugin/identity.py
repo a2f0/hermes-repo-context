@@ -24,7 +24,7 @@ _SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 # GitHub alone: renames resolve through gh, and its names are case-insensitive two-part paths,
 # so identities never nest, collide by case, or differ only by a port.
 _GITHUB_HOSTS = frozenset({"github.com", "ssh.github.com", "www.github.com"})
-_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
+_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9._-]*$")
 _UNSAFE_TEXT_RE = re.compile(r"[`\x00-\x1f\x7f\u2028\u2029]")
 
 

@@ -516,3 +516,7 @@ def test_alias_only_run_needs_no_cached_clones(capsys: pytest.CaptureFixture[str
     args = parser.parse_args(["claude-memory", "--alias=-Users-me-github-old=me/new"])
     assert cli.main(args) == 0
     assert capsys.readouterr().out.startswith("DRY RUN")
+
+
+def test_dot_github_memory_directory() -> None:
+    assert cm.memory_subpath("a2f0/.github") == PurePosixPath("a2f0/.github")
