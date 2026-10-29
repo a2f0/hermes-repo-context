@@ -623,7 +623,7 @@ def test_user_or_project_memory_setting_is_respected(env: dict[str, Path]) -> No
     (env["two"] / ".claude" / "settings.json").write_text(json.dumps({"autoMemoryDirectory": "~/team"}))
     plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
     notes = {p: note for _clone, p, _data, note in plans[0].settings}
-    assert notes[env["two"] / ".claude" / "settings.local.json"].startswith("the project's settings set it")
+    assert notes[env["two"] / ".claude" / "settings.local.json"].startswith("the project's settings are set to")
     assert source(env, "two") in plans[0].kept_paths
     (env["claude"] / "settings.json").write_text(json.dumps({"autoMemoryDirectory": "~/mine"}))
     plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
@@ -661,3 +661,23 @@ def test_busy_check_covers_clones_whose_memory_an_alias_claims(env: dict[str, Pa
     key = cm.path_key(str(env["two"]))
     plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"], aliases={key: "a2f0/old"})
     assert cm.busy_clones(plans, {env["two"].resolve()}) == [env["two"]]
+
+
+def test_merge_index_matches_repeated_headings_by_parent() -> None:
+    current = ["## A", "### Notes", "- a", "## B", "### Notes", "- b"]
+    merged, added = cm.merge_index(current, ["## B", "### Notes", "- b2"])
+    assert merged == ["## A", "### Notes", "- a", "## B", "### Notes", "- b", "- b2"]
+    assert added == 1
+
+
+def test_symlinked_user_settings_are_read(env: dict[str, Path], tmp_path: Path) -> None:
+    dotfiles = tmp_path / "dotfiles-settings.json"
+    dotfiles.write_text(json.dumps({"autoMemoryDirectory": "~/mine"}))
+    (env["claude"] / "settings.json").symlink_to(dotfiles)
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    assert plans[0].blocked.startswith("autoMemoryDirectory is set in the user settings")
+    dotfiles.write_text("{not json")
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    assert plans[0].blocked == "the user settings cannot be read; left alone"
+    dotfiles.write_text(json.dumps({"theme": "dark"}))
+    assert not cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])[0].blocked

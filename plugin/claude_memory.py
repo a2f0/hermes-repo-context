@@ -74,15 +74,20 @@ _SECTION_RE = re.compile(r"^#{2,6}\s")
 _LINK_RE = re.compile(r"\]\(([^)\s]+)\)")
 
 
+def _level(heading: str) -> int:
+    return len(heading) - len(heading.lstrip("#"))
+
+
 _FENCE_RE = re.compile(r"^\s*(```|~~~)")
 
 
-def _sections(lines: list[str]) -> list[tuple[str | None, list[str]]]:
-    """An index split at its ``##``-and-deeper headings; ``None`` holds what precedes the first.
-    A ``#`` title is ordinary text, so every index's title section lines up. Each body is a list
-    of units: a line, or a whole fenced block (its lines joined by newlines), so merging never
-    splits a block."""
-    sections: list[tuple[str | None, list[str]]] = [(None, [])]
+def _sections(lines: list[str]) -> list[tuple[tuple[str, ...], list[str]]]:
+    """An index split at its ``##``-and-deeper headings, each keyed by its heading path (its
+    ancestors' headings and its own); ``()`` holds what precedes the first. A ``#`` title is
+    ordinary text, so every index's title section lines up. Each body is a list of units: a
+    line, or a whole fenced block (its lines joined by newlines), so merging never splits one."""
+    sections: list[tuple[tuple[str, ...], list[str]]] = [((), [])]
+    chain: list[str] = []
     fence: str | None = None
     block: list[str] = []
     for raw in lines:
@@ -97,7 +102,9 @@ def _sections(lines: list[str]) -> list[tuple[str | None, list[str]]]:
         if m:
             fence, block = m.group(1), [line]
         elif _SECTION_RE.match(line):
-            sections.append((line.rstrip(), []))
+            heading = line.rstrip()
+            chain = [h for h in chain if _level(h) < _level(heading)] + [heading]
+            sections.append((tuple(chain), []))
         else:
             sections[-1][1].append(line)
     if block:  # an unclosed fence runs to the end
@@ -112,44 +119,36 @@ def _unit_key(unit: str) -> str:
     return unit.strip()
 
 
-def _level(heading: str | None) -> int:
-    return 0 if heading is None else len(heading) - len(heading.lstrip("#"))
-
-
 def merge_index(current: list[str], incoming: list[str]) -> tuple[list[str], int]:
     """*current* with what *incoming* adds, and how many lines that is. Each unit (a line or a
-    whole fenced block) goes under the heading it had in *incoming*; units compare as multisets
-    within a section, so blocks stay intact and an entry filed under two headings survives. A
-    heading *current* lacks is inserted after its nearest ancestor's subtree (at the end when it
-    has none), so nested sections keep their parents. Existing lines keep their order and form."""
+    whole fenced block) goes under the same heading path it had in *incoming*, so a repeated
+    heading under two parents stays two sections; units compare as multisets within a section,
+    so blocks stay intact and an entry filed under two headings survives. A section *current*
+    lacks is inserted after its nearest present ancestor's subtree (at the end without one).
+    Existing lines keep their order and form."""
     sections = _sections(current)
     added = 0
-    chain: list[str] = []  # the incoming headings enclosing the current one
 
-    def find(heading: str | None) -> int | None:
-        return next((i for i, (h, _) in enumerate(sections) if h == heading), None)
+    def find(path: tuple[str, ...]) -> int | None:
+        return next((i for i, (p, _) in enumerate(sections) if p == path), None)
 
-    for heading, units in _sections(incoming):
-        if heading is not None:
-            chain = [h for h in chain if _level(h) < _level(heading)]
-        idx = find(heading)
+    for path, units in _sections(incoming):
+        idx = find(path)
         if idx is None:
             pos = len(sections)
-            for ancestor in reversed(chain):
-                a = find(ancestor)
+            for n in range(len(path) - 1, 0, -1):
+                a = find(path[:n])
                 if a is not None:
                     pos = a + 1
-                    while pos < len(sections) and _level(sections[pos][0]) > _level(ancestor):
+                    while pos < len(sections) and sections[pos][0][:n] == path[:n]:
                         pos += 1
                     break
             before = sections[pos - 1][1]
             if before and before[-1].strip():
                 before.append("")
-            sections.insert(pos, (heading, []))
+            sections.insert(pos, (path, []))
             idx = pos
             added += 1
-        if heading is not None:
-            chain.append(heading)
         body = sections[idx][1]
         have = Counter(_unit_key(u) for u in body if _unit_key(u))
         seen: Counter[str] = Counter()
@@ -169,9 +168,9 @@ def merge_index(current: list[str], incoming: list[str]) -> tuple[list[str], int
             end -= 1
         body[end:end] = new
     out: list[str] = []
-    for heading, body in sections:
-        if heading is not None:
-            out.append(heading)
+    for path, body in sections:
+        if path:
+            out.append(path[-1])
         for unit in body:
             out.extend(unit.split("\n"))
     return out, added
@@ -289,6 +288,21 @@ def read_settings(path: Path) -> tuple[dict | None, str]:
     return data, ""
 
 
+def configured_memory(path: Path) -> tuple[str | None, bool]:
+    """``(autoMemoryDirectory or None, readable)`` from a settings file this tool never writes.
+    It is only read, so a symlink (a dotfiles checkout, say) is followed; unreadable is False."""
+    if not path.exists():
+        return None, not path.is_symlink()  # a dangling link is unreadable
+    try:
+        data = json.loads(path.read_text() or "{}")
+    except (OSError, ValueError):
+        return None, False
+    if not isinstance(data, dict):
+        return None, False
+    value = data.get(SETTING)
+    return (str(value) if value else None), True
+
+
 def _plan_files(g: GroupPlan) -> None:
     existing: dict[PurePosixPath, bytes] = {}
     if g.dest.is_dir():
@@ -341,9 +355,10 @@ def _plan_settings(g: GroupPlan, clones: list[Path], target: str, unclean: set[P
     unclean = unclean | {s.clone for s in g.sources if s.path in g.kept_paths}
     for clone in clones:
         path = clone / SETTINGS_FILE
-        project_value = (read_settings(clone / ".claude" / "settings.json")[0] or {}).get(SETTING)
-        if project_value:
-            g.settings.append((clone, path, None, f"the project's settings set it to {project_value}; left alone"))
+        project_value, project_ok = configured_memory(clone / ".claude" / "settings.json")
+        if project_value or not project_ok:
+            note = f"set to {project_value}" if project_value else "unreadable"
+            g.settings.append((clone, path, None, f"the project's settings are {note}; left alone"))
             continue
         data, note = read_settings(path)
         if data is None:
@@ -392,8 +407,14 @@ def plan(
     projects = claude_home / "projects"
     canonical_root = claude_home / "repo-memory"
     # A user-level setting moves every project's memory out of projects/; leave that to the user.
-    user_value = (read_settings(claude_home / "settings.json")[0] or {}).get(SETTING)
-    user_setting = f"{SETTING} is set in the user settings ({user_value}); left alone" if user_value else ""
+    user_value, user_ok = configured_memory(claude_home / "settings.json")
+    user_setting = (
+        f"{SETTING} is set in the user settings ({user_value}); left alone"
+        if user_value
+        else ""
+        if user_ok
+        else "the user settings cannot be read; left alone"
+    )
     # Group by destination, not by spelling: Owner/Repo and owner/repo share one directory.
     names: dict[PurePosixPath, str] = {}
     clones: dict[PurePosixPath, list[Path]] = {}
