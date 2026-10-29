@@ -495,3 +495,24 @@ def test_index_entries_for_copies_failing_at_apply_stay_behind(env: dict[str, Pa
 def test_link_targets_ignore_fragments_queries_and_urls() -> None:
     line = "- [T](./topic.md#details) [Q](q%20x.md?v=1) [W](https://example.com/a.md) [M](mailto:x@y)"
     assert cm.link_targets(line) == {PurePosixPath("topic.md"), PurePosixPath("q x.md")}
+
+
+def test_merge_index_keeps_repeated_lines_and_entries_under_two_headings() -> None:
+    current = ["## A", "- [X](x.md)"]
+    incoming = ["## A", "```", "code", "```", "## B", "- [X](x.md)"]
+    merged, added = cm.merge_index(current, incoming)
+    assert merged == ["## A", "- [X](x.md)", "```", "code", "```", "", "## B", "- [X](x.md)"]
+    assert added == 5
+    assert cm.merge_index(merged, incoming)[1] == 0
+
+
+def test_alias_only_run_needs_no_cached_clones(capsys: pytest.CaptureFixture[str]) -> None:
+    import argparse
+
+    from repo_context import cli
+
+    parser = argparse.ArgumentParser()
+    cli.setup(parser)
+    args = parser.parse_args(["claude-memory", "--alias=-Users-me-github-old=me/new"])
+    assert cli.main(args) == 0
+    assert capsys.readouterr().out.startswith("DRY RUN")

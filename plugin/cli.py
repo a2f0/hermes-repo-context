@@ -106,16 +106,16 @@ def run_show(args: argparse.Namespace) -> int:
 
 def run_claude_memory(args: argparse.Namespace) -> int:
     checkouts = ident.load_cache().get("checkouts") or {}
-    if not checkouts:
-        print(f"No clones in {ident.cache_path()}; run `{ident.SYNC_COMMAND}` first.")
-        return 1
     aliases = {}
     for alias in args.alias:
         key, sep, identity = alias.partition("=")
-        if not sep or not key or "/" not in identity:
-            print(f"Invalid --alias {alias!r}; expected KEY=OWNER/REPO.")
+        if not sep or not key or not ident.valid_identity(identity):
+            print(f"Invalid --alias {alias!r}; expected --alias=KEY=OWNER/REPO.")
             return 2
         aliases[key] = identity
+    if not checkouts and not aliases:
+        print(f"No clones in {ident.cache_path()}; run `{ident.SYNC_COMMAND}` first, or pass --alias.")
+        return 1
     home = Path.home()
     try:
         plans = claude_memory.plan(checkouts, claude_home=home / ".claude", home=home, aliases=aliases, only=args.only)

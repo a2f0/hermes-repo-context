@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import urllib.parse
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date
@@ -85,23 +86,27 @@ def _sections(lines: list[str]) -> list[tuple[str | None, list[str]]]:
 
 
 def merge_index(current: list[str], incoming: list[str]) -> tuple[list[str], int]:
-    """*current* with the entries of *incoming* it lacks, each under the heading it had in
-    *incoming* (a heading *current* lacks is appended with its entries), and how many lines that
-    added. Existing lines keep their order and formatting."""
+    """*current* with the lines of *incoming* it lacks, each under the heading it had in
+    *incoming* (a heading *current* lacks is appended with its lines), and how many lines that
+    added. Lines are compared as multisets within a section, so repeated lines such as code fences
+    and an entry filed under two headings survive. Existing lines keep their order and form."""
     sections = _sections(current)
-    present = {line.strip() for line in current if line.strip()}
     added = 0
     for heading, lines in _sections(incoming):
+        body = next((b for h, b in sections if h == heading), None)
+        have = Counter(line.strip() for line in body or [] if line.strip())
+        seen: Counter[str] = Counter()
         new = []
         for line in lines:
             text = line.strip()
-            if text and text not in present:
-                present.add(text)
+            if not text:
+                continue
+            seen[text] += 1
+            if seen[text] > have[text]:
                 new.append(line)
         if not new:
             continue
         added += len(new)
-        body = next((b for h, b in sections if h == heading), None)
         if body is None:
             last = sections[-1][1]
             if last and last[-1].strip():
