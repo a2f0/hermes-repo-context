@@ -49,8 +49,3 @@ warn_unreachable = true
 module = ["hermes_cli.*", "hermes_constants", "agent.*", "plugins.*"]
 ignore_missing_imports = true
 
-[[tool.mypy.overrides]]
-# Tests import the plugin as ``repo_context``, the name Hermes loads it under (see
-# tests/conftest.py); mypy checks the plugin itself as ``plugin``.
-module = ["repo_context", "repo_context.*"]
-ignore_missing_imports = true

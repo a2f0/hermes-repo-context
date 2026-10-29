@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
-from repo_context import SECTION_ID, _section
-from repo_context import identity as ident
 
 from conftest import make_clone
+
+# Hermes loads the plugin as ``repo_context`` (see conftest.py); mypy checks it as ``plugin``.
+if TYPE_CHECKING:
+    from plugin import SECTION_ID, _section
+    from plugin import identity as ident
+else:
+    from repo_context import SECTION_ID, _section
+    from repo_context import identity as ident
 
 
 @pytest.mark.parametrize(

@@ -3,12 +3,21 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
-from repo_context import claude_memory as cm
 
 from conftest import make_clone
+
+# Hermes loads the plugin as ``repo_context`` (see conftest.py); mypy checks it as ``plugin``.
+if TYPE_CHECKING:
+    from plugin import claude_memory as cm
+    from plugin import cli
+    from plugin import identity as ident
+else:
+    from repo_context import claude_memory as cm
+    from repo_context import cli
+    from repo_context import identity as ident
 
 SHARED = "~/.claude/repo-memory/a2f0/demo"
 
@@ -42,7 +51,7 @@ def env(tmp_path: Path) -> dict[str, Path]:
 URL = "git@github.com:a2f0/demo.git"
 
 
-def checkouts(env: dict[str, Path]) -> dict[str, dict[str, Any]]:
+def checkouts(env: dict[str, Path]) -> dict[str, ident.CheckoutInfo]:
     return {str(env[k]): {"url": URL, "identity": "a2f0/demo"} for k in ("one", "two")}
 
 
@@ -150,7 +159,7 @@ def test_symlinked_shared_directory_blocks_the_group(env: dict[str, Path], tmp_p
 
 
 def test_case_variants_of_a_remote_share_one_plan(env: dict[str, Path]) -> None:
-    mixed = {
+    mixed: dict[str, ident.CheckoutInfo] = {
         str(env["one"]): {"url": URL, "identity": "A2F0/Demo"},
         str(env["two"]): {"url": URL, "identity": "a2f0/demo"},
     }
@@ -334,7 +343,7 @@ def test_clones_sharing_a_claude_project_directory_are_left_alone(tmp_path: Path
     assert shared == claude / "projects" / cm.path_key(str(under)) / "memory"
     shared.mkdir(parents=True)
     (shared / "x.md").write_text("whose?")
-    found = {
+    found: dict[str, ident.CheckoutInfo] = {
         str(dash): {"url": "git@github.com:a2f0/foo-bar.git", "identity": "a2f0/foo-bar"},
         str(under): {"url": "git@github.com:a2f0/other.git", "identity": "a2f0/other"},
     }
@@ -358,7 +367,7 @@ def test_failed_copy_keeps_every_source_that_relied_on_it(env: dict[str, Path]) 
     assert (dest / "same.md").read_text() == "written since planning"
     for clone in ("one", "two"):
         assert (source(env, clone) / "same.md").is_file()
-        assert "autoMemoryDirectory" not in cm.read_settings(env[clone] / ".claude" / "settings.local.json")[0]
+        assert "autoMemoryDirectory" not in (cm.read_settings(env[clone] / ".claude" / "settings.local.json")[0] or {})
 
 
 def test_memory_written_after_redirect_restores_the_setting(
@@ -393,7 +402,7 @@ def test_provider_changed_after_planning_keeps_every_dependent(env: dict[str, Pa
     assert not (dest / "same.md").exists()
     for clone in ("one", "two"):
         assert (source(env, clone) / "same.md").is_file()
-        assert "autoMemoryDirectory" not in cm.read_settings(env[clone] / ".claude" / "settings.local.json")[0]
+        assert "autoMemoryDirectory" not in (cm.read_settings(env[clone] / ".claude" / "settings.local.json")[0] or {})
 
 
 def test_memory_created_after_planning_blocks_the_redirect(env: dict[str, Path]) -> None:
@@ -437,8 +446,6 @@ def test_clone_that_stopped_reading_the_shared_directory_keeps_its_memory(env: d
 
 def test_alias_with_a_leading_dash_parses_when_attached() -> None:
     import argparse
-
-    from repo_context import cli
 
     parser = argparse.ArgumentParser()
     cli.setup(parser)
@@ -512,8 +519,6 @@ def test_merge_index_keeps_repeated_lines_and_entries_under_two_headings() -> No
 
 def test_alias_only_run_needs_no_cached_clones(capsys: pytest.CaptureFixture[str]) -> None:
     import argparse
-
-    from repo_context import cli
 
     parser = argparse.ArgumentParser()
     cli.setup(parser)
@@ -604,11 +609,8 @@ def test_apply_refuses_while_claude_runs_in_a_clone(
 ) -> None:
     import argparse
 
-    from repo_context import cli
-    from repo_context import identity as ident
-
     ident.cache_path().write_text(json.dumps({"checkouts": checkouts(env)}))
-    monkeypatch.setattr(cli.Path, "home", staticmethod(lambda: env["home"]))
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: env["home"]))
     monkeypatch.setattr(cm, "live_claude_dirs", lambda: {env["one"].resolve()})
     parser = argparse.ArgumentParser()
     cli.setup(parser)
@@ -763,7 +765,10 @@ def test_worktrees_share_the_main_checkouts_memory(tmp_path: Path) -> None:
     memory = claude / "projects" / cm.path_key(str(main)) / "memory"
     memory.mkdir(parents=True)
     (memory / "a.md").write_text("a")
-    found = {str(main): {"url": URL, "identity": "a2f0/demo"}, str(linked): {"url": URL, "identity": "a2f0/demo"}}
+    found: dict[str, ident.CheckoutInfo] = {
+        str(main): {"url": URL, "identity": "a2f0/demo"},
+        str(linked): {"url": URL, "identity": "a2f0/demo"},
+    }
     plans = cm.plan(found, claude_home=claude, home=home)
     assert [(s.clone, s.worktrees) for s in plans[0].sources] == [(main, [linked])]
     cm.apply(plans, today="2026-10-29")
@@ -801,12 +806,9 @@ def test_settings_failure_without_memory_is_reported(
     import argparse
     import shutil
 
-    from repo_context import cli
-    from repo_context import identity as ident
-
     shutil.rmtree(source(env, "two"))
     ident.cache_path().write_text(json.dumps({"checkouts": checkouts(env)}))
-    monkeypatch.setattr(cli.Path, "home", staticmethod(lambda: env["home"]))
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: env["home"]))
     monkeypatch.setattr(cm, "live_claude_dirs", lambda: set())
     parser = argparse.ArgumentParser()
     cli.setup(parser)
@@ -844,7 +846,7 @@ def test_claimant_worktrees_are_watched_and_redirected(tmp_path: Path) -> None:
     memory = claude / "projects" / key / "memory"
     memory.mkdir(parents=True)
     (memory / "a.md").write_text("a")
-    found = {str(main): {"url": URL, "identity": "a2f0/demo", "reused": True}}
+    found: dict[str, ident.CheckoutInfo] = {str(main): {"url": URL, "identity": "a2f0/demo", "reused": True}}
     plans = cm.plan(found, claude_home=claude, home=home, aliases={key: "a2f0/old"}, only=["a2f0/old"])
     assert cm.busy_clones(plans, {hidden}) == [main, hidden]
     plans = cm.plan(found, claude_home=claude, home=home, aliases={key: "a2f0/old"})
