@@ -84,3 +84,10 @@ With Hermes installed, `hermes plugins doctor plugin --ci` and
 | `scripts/testing/verify.json` | The `bun run check` step list |
 | `scripts/git/hooks/` | Git hooks, installed by `bun run hooks:install` |
 | `scripts/checks/ci-gate.json` | The jobs `CI gate` requires |
+
+The plugin's modules form layers, each importing only those below it:
+`identity` (remote parsing, prompt section, cache) at the bottom, then
+`claude_memory`, `sync`, `cli`, and the package `__init__` on top. The plugin
+imports only the standard library, plus Hermes's own modules inside functions.
+`tests/test_module_graph.py` enforces the layers, the absence of import cycles,
+and the import rules; add a new module to its `LAYERS`.
