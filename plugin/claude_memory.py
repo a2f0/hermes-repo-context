@@ -14,11 +14,14 @@ either: it resolves the real path and denies the write.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date
@@ -159,6 +162,43 @@ class GroupPlan:
         return [s for s in self.sources if s.path not in self.kept_paths]
 
 
+def _clashes(rel: PurePosixPath, files: Iterable[PurePosixPath]) -> bool:
+    """Whether *rel* needs a directory where a file is, or is a file where a directory is."""
+    files = set(files)
+    if any(parent in files for parent in rel.parents if parent != PurePosixPath(".")):
+        return True
+    return any(rel in f.parents for f in files)
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write *path* through an exclusively created temporary file in its directory, then rename
+    it into place, so a planted temporary name or symlink is never written through."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w") as out:
+            out.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def read_settings(path: Path) -> tuple[dict | None, str]:
+    """``(settings, "")`` for a clone's settings file (``{}`` when absent), or ``(None, why)``."""
+    if path.is_symlink() or path.parent.is_symlink():
+        return None, "settings file or .claude is a symlink; left alone"
+    if not path.is_file():
+        return {}, ""
+    try:
+        data = json.loads(path.read_text() or "{}")
+    except (OSError, ValueError):
+        return None, "unparsable; left alone"
+    if not isinstance(data, dict):
+        return None, "not a JSON object; left alone"
+    return data, ""
+
+
 def _plan_files(g: GroupPlan) -> None:
     existing: dict[PurePosixPath, bytes] = {}
     if g.dest.is_dir():
@@ -177,6 +217,9 @@ def _plan_files(g: GroupPlan) -> None:
             if symlink_under(g.dest, rel):
                 g.conflicts.append(f)
                 g.keep(src.path, "the shared copy is behind a symlink")
+            elif rel not in existing and (_clashes(rel, existing.keys()) or (g.dest / rel).is_dir()):
+                g.conflicts.append(f)
+                g.keep(src.path, "a file and a directory share a name")
             elif rel == PurePosixPath(INDEX):
                 g.index += new_index_lines(g.index, f.read_text().splitlines())
             elif rel in existing and existing[rel] != f.read_bytes():
@@ -191,19 +234,10 @@ def _plan_settings(g: GroupPlan, clones: list[Path], target: str, unclean: set[P
     unclean = unclean | {s.clone for s in g.sources if s.path in g.kept_paths}
     for clone in clones:
         path = clone / SETTINGS_FILE
-        data: dict = {}
-        if path.is_symlink() or path.parent.is_symlink():
-            g.settings.append((clone, path, None, "settings file or .claude is a symlink; left alone"))
+        data, note = read_settings(path)
+        if data is None:
+            g.settings.append((clone, path, None, note))
             continue
-        if path.is_file():
-            try:
-                data = json.loads(path.read_text() or "{}")
-            except ValueError:
-                g.settings.append((clone, path, None, "unparsable; left alone"))
-                continue
-            if not isinstance(data, dict):
-                g.settings.append((clone, path, None, "not a JSON object; left alone"))
-                continue
         current = data.get(SETTING)
         if current == target:
             g.redirected.add(clone)
@@ -319,15 +353,61 @@ def plan(
 
 def _write_index(g: GroupPlan) -> None:
     """Append the planned index lines to the shared index as it is now, so lines a running
-    session added since planning survive; the write replaces the file atomically."""
+    session added since planning survive."""
     index = g.dest / INDEX
     current = index.read_text().splitlines() if index.is_file() else []
     added = new_index_lines(current, g.index)
-    if not added:
+    if added:
+        _atomic_write(index, "\n".join(current + added) + "\n")
+
+
+def _keep_clone(g: GroupPlan, clone: Path, reason: str) -> None:
+    for s in g.sources:
+        if s.clone == clone:
+            g.keep(s.path, reason)
+
+
+def _redirect(g: GroupPlan, clone: Path, path: Path, target: str) -> None:
+    """Point *clone* at the shared directory, re-reading its settings now so changes made since
+    planning (permissions, or this very setting) are kept rather than replaced."""
+    data, note = read_settings(path)
+    if data is None:
+        _keep_clone(g, clone, f"its settings changed since planning: {note}")
         return
-    tmp = index.with_name(f".{INDEX}.tmp")
-    tmp.write_text("\n".join(current + added) + "\n")
-    tmp.replace(index)
+    current = data.get(SETTING)
+    if current and current != target:
+        _keep_clone(g, clone, f"its settings changed since planning: {SETTING} is {current}")
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write(path, json.dumps({**data, SETTING: target}, indent=2) + "\n")
+    except OSError as exc:
+        _keep_clone(g, clone, f"writing its settings failed: {exc}")
+        return
+    g.redirected.add(clone)
+
+
+def _copy(g: GroupPlan, src_dir: Path, f: Path, rel: PurePosixPath) -> None:
+    if symlink_under(g.dest, rel):
+        g.conflicts.append(f)
+        g.keep(src_dir, "the shared copy is behind a symlink")
+        return
+    target = g.dest / rel
+    content = f.read_bytes()
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "xb") as out:  # never overwrite a file written since planning
+            out.write(content)
+    except FileExistsError:
+        if not target.is_file() or target.is_symlink() or target.read_bytes() != content:
+            g.conflicts.append(f)
+            g.keep(src_dir, "a file differs from the shared copy")
+        return
+    except OSError:  # a file where a directory is needed, or the reverse
+        g.conflicts.append(f)
+        g.keep(src_dir, "a file and a directory share a name")
+        return
+    shutil.copystat(f, target)
 
 
 def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
@@ -339,43 +419,14 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
             continue
         g.dest.mkdir(parents=True, exist_ok=True)
         for src_dir, f, rel in g.copies:
-            if symlink_under(g.dest, rel):
-                g.conflicts.append(f)
-                g.keep(src_dir, "the shared copy is behind a symlink")
-                continue
-            target = g.dest / rel
-            target.parent.mkdir(parents=True, exist_ok=True)
-            content = f.read_bytes()
-            try:
-                with open(target, "xb") as out:  # never overwrite a file written since planning
-                    out.write(content)
-            except FileExistsError:
-                if target.read_bytes() != content:
-                    g.conflicts.append(f)
-                    g.keep(src_dir, "a file differs from the shared copy")
-                continue
-            shutil.copystat(f, target)
+            _copy(g, src_dir, f, rel)
         _write_index(g)
         for s in g.sources:
             if s.path not in g.kept_paths and s.changed():
                 g.keep(s.path, "changed since planning; re-run to merge it")
         for clone, path, data in g.settings_changes:
-            if any(s.clone == clone and s.path in g.kept_paths for s in g.sources):
-                continue
-            if path.is_symlink() or path.parent.is_symlink():
-                for s in g.sources:
-                    if s.clone == clone:
-                        g.keep(s.path, "its settings file became a symlink")
-                continue
-            try:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(json.dumps(data, indent=2) + "\n")
-            except OSError as exc:
-                for s in g.sources:
-                    if s.clone == clone:
-                        g.keep(s.path, f"writing its settings failed: {exc}")
-                continue
-            g.redirected.add(clone)
+            if not any(s.clone == clone and s.path in g.kept_paths for s in g.sources):
+                _redirect(g, clone, path, data[SETTING])
         for src in g.archivable():
             if src.changed():
                 g.keep(src.path, "changed since planning; re-run to merge it")

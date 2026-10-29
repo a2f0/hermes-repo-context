@@ -277,3 +277,54 @@ def test_writes_since_planning_are_kept(env: dict[str, Path]) -> None:
     reasons = dict(plans[0].kept)
     assert reasons[source(env, "two")] == "changed since planning; re-run to merge it"
     assert not (env["two"] / ".claude" / "settings.local.json").exists()
+
+
+def test_planted_temporary_index_symlink_is_not_written_through(env: dict[str, Path], tmp_path: Path) -> None:
+    outside = tmp_path / "outside.md"
+    outside.write_text("untouched")
+    dest = env["claude"] / "repo-memory" / "a2f0" / "demo"
+    dest.mkdir(parents=True)
+    (dest / ".MEMORY.md.tmp").symlink_to(outside)
+    cm.apply(cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"]), today="2026-10-29")
+    assert outside.read_text() == "untouched"
+    assert (dest / "MEMORY.md").read_text().startswith("# Memory Index")
+
+
+def test_settings_changed_since_planning_are_kept(env: dict[str, Path]) -> None:
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    one = env["one"] / ".claude" / "settings.local.json"
+    one.write_text(json.dumps({"permissions": {"allow": ["x", "y"]}}))
+    two = env["two"] / ".claude" / "settings.local.json"
+    two.write_text(json.dumps({"autoMemoryDirectory": "~/elsewhere"}))
+    cm.apply(plans, today="2026-10-29")
+    assert json.loads(one.read_text()) == {"permissions": {"allow": ["x", "y"]}, "autoMemoryDirectory": SHARED}
+    assert json.loads(two.read_text()) == {"autoMemoryDirectory": "~/elsewhere"}
+    assert (source(env, "two") / "b.md").is_file()
+    assert not source(env, "one").exists()
+
+
+def test_file_and_directory_with_one_name_are_conflicts(env: dict[str, Path]) -> None:
+    dest = env["claude"] / "repo-memory" / "a2f0" / "demo"
+    dest.mkdir(parents=True)
+    (dest / "notes").write_text("a file where two has a directory")
+    (source(env, "one") / "b.md").mkdir()
+    (source(env, "one") / "b.md" / "inner.md").write_text("i")
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    # one's b.md/inner.md is planned first, so two's file b.md is the one that clashes.
+    assert {f.name for f in plans[0].conflicts} == {"n.md", "b.md"}
+    cm.apply(plans, today="2026-10-29")
+    assert (dest / "notes").read_text() == "a file where two has a directory"
+    assert (dest / "b.md" / "inner.md").read_text() == "i"
+    assert (source(env, "two") / "notes" / "n.md").is_file()
+    assert (source(env, "two") / "b.md").is_file()
+
+
+def test_collision_appearing_after_planning_does_not_abort(env: dict[str, Path]) -> None:
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    dest = env["claude"] / "repo-memory" / "a2f0" / "demo"
+    dest.mkdir(parents=True)
+    (dest / "notes").write_text("appeared")
+    cm.apply(plans, today="2026-10-29")
+    assert (dest / "notes").read_text() == "appeared"
+    assert (source(env, "two") / "notes" / "n.md").is_file()
+    assert (dest / "a.md").read_text() == "a"
