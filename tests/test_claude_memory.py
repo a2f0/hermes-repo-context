@@ -759,3 +759,45 @@ def test_worktrees_share_the_main_checkouts_memory(tmp_path: Path) -> None:
     for clone in (main, linked):
         settings = json.loads((clone / ".claude" / "settings.local.json").read_text())
         assert settings["autoMemoryDirectory"] == "~/.claude/repo-memory/a2f0/demo"
+
+
+def test_uncached_worktrees_are_redirected_too(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    main = make_clone(home / "github" / "wt", URL)
+    git = ["git", "-C", str(main), "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+    (main / ".gitignore").write_text(".claude/settings.local.json\n")
+    subprocess.run([*git, "add", ".gitignore"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "init"], check=True)
+    hidden = (main / ".claude" / "worktrees" / "agent").resolve()
+    subprocess.run([*git, "worktree", "add", "-q", str(hidden)], check=True)
+    memory = claude / "projects" / cm.path_key(str(main)) / "memory"
+    memory.mkdir(parents=True)
+    (memory / "a.md").write_text("a")
+    plans = cm.plan({str(main): {"url": URL, "identity": "a2f0/demo"}}, claude_home=claude, home=home)
+    assert plans[0].sources[0].worktrees == [hidden]
+    assert cm.busy_clones(plans, {hidden}) == [main, hidden]  # a session in hidden is inside main too
+    cm.apply(plans, today="2026-10-29")
+    for clone in (main, hidden):
+        assert json.loads((clone / ".claude" / "settings.local.json").read_text())["autoMemoryDirectory"]
+
+
+def test_settings_failure_without_memory_is_reported(env: dict[str, Path], monkeypatch, capsys) -> None:
+    import argparse
+    import shutil
+
+    from repo_context import cli
+    from repo_context import identity as ident
+
+    shutil.rmtree(source(env, "two"))
+    ident.cache_path().write_text(json.dumps({"checkouts": checkouts(env)}))
+    monkeypatch.setattr(cli.Path, "home", staticmethod(lambda: env["home"]))
+    monkeypatch.setattr(cm, "live_claude_dirs", lambda: set())
+    parser = argparse.ArgumentParser()
+    cli.setup(parser)
+    (env["two"] / ".claude").chmod(0o500)
+    try:
+        assert cli.main(parser.parse_args(["claude-memory", "--apply"])) == 1
+    finally:
+        (env["two"] / ".claude").chmod(0o700)
+    assert "NOT REDIRECTED" in capsys.readouterr().out

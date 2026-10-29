@@ -64,6 +64,18 @@ def project_root(clone: Path) -> Path:
     return clone
 
 
+def registered_worktrees(clone: Path) -> list[Path]:
+    """Every existing worktree of *clone*'s repository, the main checkout included."""
+    out = git(clone, "worktree", "list", "--porcelain") or ""
+    trees = []
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            tree = Path(line[len("worktree ") :]).resolve()
+            if tree.is_dir():
+                trees.append(tree)
+    return trees
+
+
 def path_key(path: str) -> str:
     """Claude Code's project directory name for a checkout path."""
     return re.sub(r"[^A-Za-z0-9]", "-", path)
@@ -265,6 +277,7 @@ class GroupPlan:
     clones: list[Path] = field(default_factory=list)  # every clone of this repository
     watch: set[Path] = field(default_factory=set)  # other clones whose memory directory is a source
     claims: dict[Path, Path] = field(default_factory=dict)  # clone -> its memory dir an alias claims
+    failures: list[tuple[Path, str]] = field(default_factory=list)  # clones apply could not redirect
     failed_rels: set[PurePosixPath] = field(default_factory=set)  # copies that failed at apply time
     conflicts: list[Path] = field(default_factory=list)
     skipped: list[Path] = field(default_factory=list)
@@ -492,6 +505,11 @@ def plan(
             primary[slot] = src
         merged_entries.append(entry)
     entries = merged_entries
+    # Worktrees outside the scanned directories (.claude/worktrees, say) read the same memory.
+    for src in primary.values():
+        for tree in registered_worktrees(src.clone):
+            if tree not in src.all_clones:
+                src.worktrees.append(tree)
     # Claude Code's project key folds every non-alphanumeric character to "-", so foo-bar and
     # foo_bar share one memory directory; such a directory belongs to no single clone.
     users: dict[Path, int] = {}
@@ -609,6 +627,8 @@ def _write_index(g: GroupPlan) -> None:
 
 
 def _keep_clone(g: GroupPlan, clone: Path, reason: str) -> None:
+    """Keep the sources *clone* reads, and record that *clone* was not redirected."""
+    g.failures.append((clone, reason))
     for s in g.sources:
         if clone in s.all_clones:
             g.keep(s.path, reason)

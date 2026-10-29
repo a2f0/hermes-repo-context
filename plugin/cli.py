@@ -168,4 +168,7 @@ def run_claude_memory(args: argparse.Namespace) -> int:
     for g in plans:
         for path, reason in g.kept:
             print(f"KEPT in place ({reason}): {claude_memory.display(path, home)}")
-    return 0
+    failures = [(clone, reason) for g in plans for clone, reason in g.failures]
+    for clone, reason in failures:
+        print(f"NOT REDIRECTED ({reason}): {claude_memory.display(clone, home)}")
+    return 1 if failures else 0
