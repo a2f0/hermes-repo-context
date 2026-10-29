@@ -7,6 +7,7 @@ dependencies = []
 
 [dependency-groups]
 dev = [
+    "mypy==2.4.1",
     "pytest==9.2.0",
     "ruff==0.17.3",
 ]
@@ -24,4 +25,32 @@ target-version = "py311"
 src = ["plugin", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP"]
+select = ["E", "F", "I", "B", "UP", "S", "SIM", "RUF"]
+ignore = [
+    # The plugin runs git, gh, and lsof with argument lists and no shell; every argument is a path
+    # or a fixed flag. S603 flags each such call regardless, and S607 the PATH lookup, which is
+    # intended: mise and Homebrew install these tools outside any fixed location.
+    "S603",
+    "S607",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# pytest asserts by design.
+"tests/**" = ["S101"]
+
+[tool.mypy]
+files = ["plugin", "tests"]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+# Hermes's own modules, imported lazily inside the plugin and absent outside a Hermes install.
+module = ["hermes_cli.*", "hermes_constants", "agent.*", "plugins.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Tests import the plugin as ``repo_context``, the name Hermes loads it under (see
+# tests/conftest.py); mypy checks the plugin itself as ``plugin``.
+module = ["repo_context", "repo_context.*"]
+ignore_missing_imports = true

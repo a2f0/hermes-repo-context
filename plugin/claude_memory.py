@@ -23,13 +23,14 @@ import subprocess
 import tempfile
 import urllib.parse
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path, PurePosixPath
+from typing import Any
 
+from .identity import CheckoutInfo, git, git_env, remote_url, valid_identity
 from .identity import atomic_write as _atomic_write
-from .identity import git, git_env, remote_url, valid_identity
 
 INDEX = "MEMORY.md"
 INDEX_MAX_LINES, INDEX_MAX_BYTES = 200, 25_000
@@ -283,7 +284,7 @@ class GroupPlan:
     skipped: list[Path] = field(default_factory=list)
     index_before: int = 0
     index: list[str] = field(default_factory=list)
-    settings: list[tuple[Path, Path, dict | None, str]] = field(default_factory=list)
+    settings: list[tuple[Path, Path, dict[str, Any] | None, str]] = field(default_factory=list)
     redirected: set[Path] = field(default_factory=set)
     kept: list[tuple[Path, str]] = field(default_factory=list)
     blocked: str = ""
@@ -297,7 +298,7 @@ class GroupPlan:
         return len(self.index) > INDEX_MAX_LINES or len(self.index_text.encode()) > INDEX_MAX_BYTES
 
     @property
-    def settings_changes(self) -> list[tuple[Path, Path, dict]]:
+    def settings_changes(self) -> list[tuple[Path, Path, dict[str, Any]]]:
         return [(clone, path, data) for clone, path, data, _ in self.settings if data is not None]
 
     @property
@@ -321,7 +322,7 @@ def _clashes(rel: PurePosixPath, files: Iterable[PurePosixPath]) -> bool:
     return any(rel in f.parents for f in files)
 
 
-def read_settings(path: Path) -> tuple[dict | None, str]:
+def read_settings(path: Path) -> tuple[dict[str, Any] | None, str]:
     """``(settings, "")`` for a clone's settings file (``{}`` when absent), or ``(None, why)``."""
     if path.is_symlink() or path.parent.is_symlink():
         return None, "settings file or .claude is a symlink; left alone"
@@ -445,7 +446,7 @@ def _dest_problem(root: Path, dest: Path) -> str:
 
 
 def plan(
-    checkouts: dict[str, dict[str, str]],
+    checkouts: Mapping[str, CheckoutInfo],
     *,
     claude_home: Path,
     home: Path,
@@ -477,22 +478,24 @@ def plan(
             raise ValueError(f"invalid project key {key!r}; expected a name from ~/.claude/projects")
     alias_keys = set(aliases or {})
     claimants: dict[Path, list[Path]] = {}  # aliased memory directory -> clones that map to it
-    entries = []
+    # (identity, memory source, cached remote URL or None for an alias, reused, claimed)
+    entries: list[tuple[str, Source, str | None, bool, bool]] = []
     alias_subs = {key: memory_subpath(identity) for key, identity in (aliases or {}).items()}
     owned_keys: set[str] = set()  # aliases that name the checkout's own repository
     for path, info in checkouts.items():
         key = path_key(str(project_root(Path(path))))
-        if key in alias_keys and alias_subs[key] == memory_subpath(info["identity"]):
-            # The alias confirms what the checkout already says: it owns its memory, reused or not.
+        # An alias naming the checkout's own repository confirms that it owns its memory,
+        # reused or not; one naming another repository claims the memory from it.
+        owned = key in alias_keys and alias_subs[key] == memory_subpath(info["identity"])
+        if owned:
             owned_keys.add(key)
-            info = {**info, "reused": False}
-        claimed = key in alias_keys and alias_subs[key] != memory_subpath(info["identity"])
+        claimed = key in alias_keys and not owned
         if claimed:
             watchers = claimants.setdefault(projects / key / "memory", [])
             for tree in [Path(path), *registered_worktrees(Path(path))]:
                 if tree not in watchers:
                     watchers.append(tree)
-        reused = bool(info.get("reused")) and not claimed
+        reused = bool(info.get("reused")) and not claimed and not owned
         entries.append(
             (info["identity"], Source(projects / key / "memory", Path(path)), info.get("url"), reused, claimed)
         )
@@ -517,6 +520,8 @@ def plan(
     entries = merged_entries
     # Worktrees outside the scanned directories (.claude/worktrees, say) read the same memory.
     for src in primary.values():
+        if src.clone is None:
+            continue
         for tree in registered_worktrees(src.clone):
             if tree not in src.all_clones:
                 src.worktrees.append(tree)
@@ -538,7 +543,7 @@ def plan(
         if src.clone is not None and (not url or remote_url(src.clone) != url):
             stale.setdefault(sub, []).append((src.path, "its clone's remote no longer matches the cache; re-run sync"))
             continue
-        if claimed:
+        if claimed and src.clone is not None:
             # The checkout and every worktree of it read the claimed directory today.
             for tree in [src.clone, *registered_worktrees(src.clone)]:
                 if tree not in clones[sub]:
@@ -578,8 +583,8 @@ def plan(
         g.clones = list(clones[sub])
         g.watch = {c for s in sources[sub] for c in claimants.get(s.path, [])}
         g.claims = dict(claims.get(sub, {}))
-        for path, reason in stale.get(sub, []):
-            g.keep(path, reason)
+        for stale_path, reason in stale.get(sub, []):
+            g.keep(stale_path, reason)
         # A clone whose memory directory is a symlink is not merged, so it must not be redirected.
         unclean = set()
         for s in sources[sub]:
@@ -817,11 +822,11 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
                 if clone in g.redirected:
                     redirected_now[clone] = (path, data[SETTING])
         # Memory a session created while the settings were being written was never planned.
-        for clone, (path, target) in list(redirected_now.items()):
+        for clone, (settings_path, value) in list(redirected_now.items()):
             own = g.clone_sources.get(clone)
             if own is not None and own not in planned and _has_files(own):
                 g.keep(own, "memory appeared while redirecting; re-run to merge it")
-                _unredirect(g, clone, path, target)
+                _unredirect(g, clone, settings_path, value)
                 del redirected_now[clone]
         for src in g.archivable():
             if any((read_settings(c / SETTINGS_FILE)[0] or {}).get(SETTING) != g.target for c in src.all_clones):

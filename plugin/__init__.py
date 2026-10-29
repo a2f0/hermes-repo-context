@@ -21,7 +21,7 @@ def _section(session_info: Mapping[str, Any]) -> str:
     return render_section(str(session_info.get("cwd") or ""))
 
 
-def register(ctx) -> None:
+def register(ctx: Any) -> None:  # Hermes's PluginContext, which plugins cannot import
     from . import cli
 
     ctx.register_system_prompt_section(SECTION_ID, _section, position="after_memory", max_chars=2000)

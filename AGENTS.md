@@ -15,9 +15,12 @@ Bun, uv, and ShellCheck are pinned in `.mise.toml`; uv selects Python from
 `uv sync --frozen`, then run `bun run hooks:install`; run it again after
 returning to `main` from a merge.
 
-Run `bun run check` for Ruff lint and format checks, the pytest suite,
-ShellCheck over the hooks, the binary-file check, and the managed skill and
-permission checks. When Hermes is installed, also run
+Run `bun run check` for Ruff lint and format checks, strict mypy over `plugin/`
+and `tests/`, the pytest suite, ShellCheck over the hooks, the binary-file
+check, and the managed skill and permission checks. Ruff stands in for Black
+(formatting) and Flake8 (linting); do not add either. Fix a finding rather than
+suppressing it; `pyproject.toml` records the reason for each rule it ignores.
+When Hermes is installed, also run
 `hermes plugins doctor plugin --ci` and `hermes plugins validate plugin`; they
 import the plugin through Hermes's own loader. Validate expects one advisory
 warning: `plugin/identity.py` calls the private

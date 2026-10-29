@@ -21,6 +21,14 @@
       ]
     },
     {
+      "label": "types",
+      "command": [
+        "uv",
+        "run",
+        "mypy"
+      ]
+    },
+    {
       "label": "tests",
       "command": [
         "uv",

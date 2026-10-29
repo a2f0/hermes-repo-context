@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from repo_context import identity as ident
@@ -24,7 +25,7 @@ class FakeTrust:
 
 
 class FakeGitHub:
-    renames = {"a2f0/stealth": "a2f0/balebase"}
+    renames: ClassVar[dict[str, str]] = {"a2f0/stealth": "a2f0/balebase"}
 
     def __init__(self) -> None:
         self.calls: list[str] = []

@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, NotRequired, TypedDict, TypeGuard
 
 PLUGIN_NAME = "repo-context"
 SKILL_CATEGORY = "repos"
@@ -28,7 +28,15 @@ _SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9._-]*$")
 _UNSAFE_TEXT_RE = re.compile(r"[`\x00-\x1f\x7f\u2028\u2029]")
 
 
-def valid_identity(identity: str | None) -> bool:
+class CheckoutInfo(TypedDict):
+    """A clone's entry in the sync cache."""
+
+    url: str
+    identity: str
+    reused: NotRequired[bool]  # its Claude Code project key has held another repository
+
+
+def valid_identity(identity: str | None) -> TypeGuard[str]:
     """Whether *identity* is a GitHub ``owner/repo`` built only from safe name characters, so it
     can be shown in a prompt or used as a directory name."""
     if not identity:
@@ -58,7 +66,7 @@ def data_dir() -> Path:
     try:
         from plugins.plugin_storage import plugin_data_dir
 
-        return plugin_data_dir(PLUGIN_NAME)
+        return Path(plugin_data_dir(PLUGIN_NAME))
     except ImportError:
         path = hermes_home() / "plugin-data" / PLUGIN_NAME
         path.mkdir(parents=True, exist_ok=True)

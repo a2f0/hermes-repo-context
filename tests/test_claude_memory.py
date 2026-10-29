@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 import pytest
 from repo_context import claude_memory as cm
@@ -41,12 +42,13 @@ def env(tmp_path: Path) -> dict[str, Path]:
 URL = "git@github.com:a2f0/demo.git"
 
 
-def checkouts(env: dict[str, Path]) -> dict[str, dict[str, str]]:
+def checkouts(env: dict[str, Path]) -> dict[str, dict[str, Any]]:
     return {str(env[k]): {"url": URL, "identity": "a2f0/demo"} for k in ("one", "two")}
 
 
 def source(env: dict[str, Path], clone: str) -> Path:
-    return env["claude"] / "projects" / cm.path_key(str(env[clone])) / "memory"
+    key: str = cm.path_key(str(env[clone]))
+    return env["claude"] / "projects" / key / "memory"
 
 
 def test_path_key_matches_claude_code() -> None:
@@ -359,11 +361,13 @@ def test_failed_copy_keeps_every_source_that_relied_on_it(env: dict[str, Path]) 
         assert "autoMemoryDirectory" not in cm.read_settings(env[clone] / ".claude" / "settings.local.json")[0]
 
 
-def test_memory_written_after_redirect_restores_the_setting(env: dict[str, Path], monkeypatch) -> None:
+def test_memory_written_after_redirect_restores_the_setting(
+    env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
     real_redirect = cm._redirect
 
-    def redirect_then_write(g, clone, path, target):
+    def redirect_then_write(g: Any, clone: Path, path: Path, target: str) -> None:
         real_redirect(g, clone, path, target)
         if clone == env["two"]:
             (source(env, "two") / "during.md").write_text("written by a running session")
@@ -542,16 +546,18 @@ def test_replace_if_unchanged(tmp_path: Path) -> None:
     assert sorted(p.name for p in path.parent.iterdir()) == ["MEMORY.md"]
 
 
-def test_index_written_by_a_session_during_apply_is_merged_not_lost(env: dict[str, Path], monkeypatch) -> None:
+def test_index_written_by_a_session_during_apply_is_merged_not_lost(
+    env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
     real = cm._replace_if_unchanged
-    calls = []
+    calls: list[int] = []
 
-    def session_writes_first(path, text, before):
+    def session_writes_first(path: Path, text: str, before: bytes | None) -> bool:
         if path.name == "MEMORY.md" and not calls:
             calls.append(1)
             path.write_text("- [S](s.md) — written by a running session\n")
-        return real(path, text, before)
+        return bool(real(path, text, before))
 
     monkeypatch.setattr(cm, "_replace_if_unchanged", session_writes_first)
     cm.apply(plans, today="2026-10-29")
@@ -566,14 +572,16 @@ def test_fenced_blocks_differing_in_indentation_are_distinct() -> None:
     assert cm.merge_index(current, incoming)[1] == 3
 
 
-def test_memory_created_while_redirecting_undoes_the_redirect(env: dict[str, Path], monkeypatch) -> None:
+def test_memory_created_while_redirecting_undoes_the_redirect(
+    env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     import shutil
 
     shutil.rmtree(source(env, "two"))
     plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
     real = cm._redirect
 
-    def redirect_then_session_writes(g, clone, path, target):
+    def redirect_then_session_writes(g: Any, clone: Path, path: Path, target: str) -> None:
         real(g, clone, path, target)
         if clone == env["two"]:
             source(env, "two").mkdir()
@@ -591,7 +599,9 @@ def test_busy_clones(env: dict[str, Path]) -> None:
     assert cm.busy_clones(plans, {env["home"].resolve()}) == []
 
 
-def test_apply_refuses_while_claude_runs_in_a_clone(env: dict[str, Path], monkeypatch, capsys) -> None:
+def test_apply_refuses_while_claude_runs_in_a_clone(
+    env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     import argparse
 
     from repo_context import cli
@@ -688,7 +698,7 @@ def test_symlinked_user_settings_are_read(env: dict[str, Path], tmp_path: Path) 
 
 def test_merge_index_keeps_blank_lines_that_shape_markdown() -> None:
     incoming = ["- [A](a.md)", "", "    indented code", "", "Paragraph."]
-    merged, added = cm.merge_index([], incoming)
+    merged, _added = cm.merge_index([], incoming)
     assert merged == incoming
     assert cm.merge_index(merged, incoming)[1] == 0
     assert cm.merge_index(["code"], ["    code"])[1] == 1
@@ -785,7 +795,9 @@ def test_uncached_worktrees_are_redirected_too(tmp_path: Path) -> None:
         assert json.loads((clone / ".claude" / "settings.local.json").read_text())["autoMemoryDirectory"]
 
 
-def test_settings_failure_without_memory_is_reported(env: dict[str, Path], monkeypatch, capsys) -> None:
+def test_settings_failure_without_memory_is_reported(
+    env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     import argparse
     import shutil
 
