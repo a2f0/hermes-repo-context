@@ -2,7 +2,7 @@
   "name": "hermes-repo-context-tools",
   "private": true,
   "description": "Agent workflow tooling for the hermes-repo-context plugin",
-  "packageManager": "bun@1.4.3",
+  "packageManager": "bun@1.4.4",
   "engines": {
     "bun": ">=1.4.3"
   },
@@ -22,6 +22,6 @@
     "check": "agent-tool run-group scripts/testing/verify.json"
   },
   "devDependencies": {
-    "@a2f0/agent-tool": "0.1.30"
+    "@a2f0/agent-tool": "0.1.39"
   }
 }
