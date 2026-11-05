@@ -951,3 +951,33 @@ def test_unredirect_leaves_a_setting_changed_meanwhile(env: dict[str, Path]) -> 
     assert g.stuck == []
     assert env["two"] not in g.redirected
     assert json.loads(path.read_text()) == {"autoMemoryDirectory": "~/elsewhere"}
+
+
+def test_unredirect_reports_settings_it_cannot_open(env: dict[str, Path]) -> None:
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    g = plans[0]
+    path = env["two"] / ".claude" / "settings.local.json"
+    path.write_text(json.dumps({"autoMemoryDirectory": SHARED}))
+    g.redirected.add(env["two"])
+    path.chmod(0o000)
+    try:
+        cm._unredirect(g, env["two"], path, SHARED)
+    finally:
+        path.chmod(0o600)
+    assert [clone for clone, _ in g.stuck] == [env["two"]]
+    assert env["two"] in g.redirected
+    assert json.loads(path.read_text()) == {"autoMemoryDirectory": SHARED}
+
+
+def test_unreadable_settings_at_apply_time_keep_the_source(env: dict[str, Path]) -> None:
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    path = env["one"] / ".claude" / "settings.local.json"
+    path.chmod(0o000)
+    try:
+        cm.apply(plans, today="2026-10-29")
+    finally:
+        path.chmod(0o600)
+    assert [clone for clone, _ in plans[0].failures] == [env["one"]]
+    assert (source(env, "one") / "a.md").is_file()
+    assert "autoMemoryDirectory" not in json.loads(path.read_text())
+    assert not source(env, "two").exists()

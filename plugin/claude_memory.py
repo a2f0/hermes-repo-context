@@ -665,7 +665,11 @@ def _keep_clone(g: GroupPlan, clone: Path, reason: str) -> None:
 def _redirect(g: GroupPlan, clone: Path, path: Path, target: str) -> None:
     """Point *clone* at the shared directory, re-reading its settings now so changes made since
     planning (permissions, or this very setting) are kept rather than replaced."""
-    before = path.read_bytes() if path.is_file() and not path.is_symlink() else None
+    try:
+        before = path.read_bytes() if path.is_file() and not path.is_symlink() else None
+    except OSError as exc:
+        _keep_clone(g, clone, f"reading its settings failed: {exc}")
+        return
     data, note = read_settings(path)
     if data is None:
         _keep_clone(g, clone, f"its settings changed since planning: {note}")
@@ -729,7 +733,11 @@ def _unredirect(g: GroupPlan, clone: Path, path: Path, target: str) -> None:
     shared directory afterwards is recorded in ``g.stuck``, since its own memory stays unread."""
     reason = "its settings kept changing; check them"
     for _attempt in range(5):
-        before = path.read_bytes() if path.is_file() and not path.is_symlink() else None
+        try:
+            before = path.read_bytes() if path.is_file() and not path.is_symlink() else None
+        except OSError as exc:
+            reason = f"reading its settings failed: {exc}"
+            break
         data, note = read_settings(path)
         if data is None:
             reason = f"its settings cannot be restored: {note}"
