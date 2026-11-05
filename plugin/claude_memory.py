@@ -30,7 +30,6 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .identity import CheckoutInfo, git, git_env, remote_url, valid_identity
-from .identity import atomic_write as _atomic_write
 
 INDEX = "MEMORY.md"
 INDEX_MAX_LINES, INDEX_MAX_BYTES = 200, 25_000
@@ -279,6 +278,8 @@ class GroupPlan:
     watch: set[Path] = field(default_factory=set)  # other clones whose memory directory is a source
     claims: dict[Path, Path] = field(default_factory=dict)  # clone -> its memory dir an alias claims
     failures: list[tuple[Path, str]] = field(default_factory=list)  # clones apply could not redirect
+    # Clones apply redirected but could not point back at memory that stayed in place.
+    stuck: list[tuple[Path, str]] = field(default_factory=list)
     failed_rels: set[PurePosixPath] = field(default_factory=set)  # copies that failed at apply time
     conflicts: list[Path] = field(default_factory=list)
     skipped: list[Path] = field(default_factory=list)
@@ -664,7 +665,11 @@ def _keep_clone(g: GroupPlan, clone: Path, reason: str) -> None:
 def _redirect(g: GroupPlan, clone: Path, path: Path, target: str) -> None:
     """Point *clone* at the shared directory, re-reading its settings now so changes made since
     planning (permissions, or this very setting) are kept rather than replaced."""
-    before = path.read_bytes() if path.is_file() and not path.is_symlink() else None
+    try:
+        before = path.read_bytes() if path.is_file() and not path.is_symlink() else None
+    except OSError as exc:
+        _keep_clone(g, clone, f"reading its settings failed: {exc}")
+        return
     data, note = read_settings(path)
     if data is None:
         _keep_clone(g, clone, f"its settings changed since planning: {note}")
@@ -723,13 +728,33 @@ def _copy(g: GroupPlan, src_dir: Path, f: Path, rel: PurePosixPath) -> None:
 
 
 def _unredirect(g: GroupPlan, clone: Path, path: Path, target: str) -> None:
-    """Undo a redirect made in this run, so a clone whose memory changed keeps reading it."""
-    data, _note = read_settings(path)
-    if data is not None and data.get(SETTING) == target:
+    """Undo a redirect made in this run, so a clone whose memory changed keeps reading it. The
+    settings are re-read and replaced only if unchanged meanwhile; a clone that still reads the
+    shared directory afterwards is recorded in ``g.stuck``, since its own memory stays unread."""
+    reason = "its settings kept changing; check them"
+    for _attempt in range(5):
+        try:
+            before = path.read_bytes() if path.is_file() and not path.is_symlink() else None
+        except OSError as exc:
+            reason = f"reading its settings failed: {exc}"
+            break
+        data, note = read_settings(path)
+        if data is None:
+            reason = f"its settings cannot be restored: {note}"
+            break
+        if data.get(SETTING) != target:
+            g.redirected.discard(clone)  # a session changed it meanwhile; it no longer reads dest
+            return
         data.pop(SETTING)
-        with contextlib.suppress(OSError):
-            _atomic_write(path, json.dumps(data, indent=2) + "\n")
+        try:
+            written = _replace_if_unchanged(path, json.dumps(data, indent=2) + "\n", before)
+        except OSError as exc:
+            reason = f"restoring its settings failed: {exc}"
+            break
+        if written:
             g.redirected.discard(clone)
+            return
+    g.stuck.append((clone, reason))
 
 
 def live_claude_dirs() -> set[Path] | None:

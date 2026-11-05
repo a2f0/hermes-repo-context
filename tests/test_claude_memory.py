@@ -851,3 +851,133 @@ def test_worktree_paths_needing_quotes_are_found(tmp_path: Path) -> None:
     subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", "--detach", str(odd)], check=True)
     # Line-based porcelain splits this path; -z keeps it whole.
     assert cm.registered_worktrees(main) == [main, odd]
+
+
+def _lock_settings_after_redirect(
+    env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, then: Any = None
+) -> list[Path]:
+    """Redirect clone two, run *then*, and make its ``.claude`` read-only so undoing fails."""
+    real = cm._redirect
+    locked: list[Path] = []
+
+    def redirect_then_lock(g: Any, clone: Path, path: Path, target: str) -> None:
+        real(g, clone, path, target)
+        if clone == env["two"]:
+            if then is not None:
+                then()
+            path.parent.chmod(0o500)
+            locked.append(path.parent)
+
+    monkeypatch.setattr(cm, "_redirect", redirect_then_lock)
+    return locked
+
+
+def test_failed_unredirect_after_new_memory_is_reported(
+    env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import argparse
+    import shutil
+
+    shutil.rmtree(source(env, "two"))
+
+    def session_writes() -> None:
+        source(env, "two").mkdir()
+        (source(env, "two") / "new.md").write_text("new")
+
+    locked = _lock_settings_after_redirect(env, monkeypatch, session_writes)
+    ident.cache_path().write_text(json.dumps({"checkouts": checkouts(env)}))
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: env["home"]))
+    monkeypatch.setattr(cm, "live_claude_dirs", lambda: set())
+    parser = argparse.ArgumentParser()
+    cli.setup(parser)
+    try:
+        assert cli.main(parser.parse_args(["claude-memory", "--apply"])) == 1
+    finally:
+        for d in locked:
+            d.chmod(0o700)
+    out = capsys.readouterr().out
+    assert "STILL REDIRECTED" in out
+    assert str(env["two"].relative_to(env["home"])) in out
+    settings = json.loads((env["two"] / ".claude" / "settings.local.json").read_text())
+    assert settings["autoMemoryDirectory"] == SHARED
+    assert (source(env, "two") / "new.md").is_file()
+
+
+def test_failed_unredirect_after_source_changed_is_reported(
+    env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    real_merged = cm._merged
+
+    def merged_then_session_writes(g: Any, path: Path) -> bool:
+        ok = real_merged(g, path)
+        if path == source(env, "two"):
+            # After the merge check, before archiving: the redirect is undone in the archive step.
+            (path / "late.md").write_text("late")
+        return ok
+
+    monkeypatch.setattr(cm, "_merged", merged_then_session_writes)
+    locked = _lock_settings_after_redirect(env, monkeypatch)
+    try:
+        cm.apply(plans, today="2026-10-29")
+    finally:
+        for d in locked:
+            d.chmod(0o700)
+    g = plans[0]
+    assert [clone for clone, _ in g.stuck] == [env["two"]]
+    assert env["two"] in g.redirected
+    assert (source(env, "two") / "late.md").is_file()
+    assert json.loads((env["two"] / ".claude" / "settings.local.json").read_text())["autoMemoryDirectory"] == SHARED
+
+
+def test_unredirect_reports_settings_it_cannot_read(env: dict[str, Path], tmp_path: Path) -> None:
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    g = plans[0]
+    path = env["two"] / ".claude" / "settings.local.json"
+    path.write_text("{not json")
+    g.redirected.add(env["two"])
+    cm._unredirect(g, env["two"], path, SHARED)
+    assert [clone for clone, _ in g.stuck] == [env["two"]]
+    assert path.read_text() == "{not json"
+
+
+def test_unredirect_leaves_a_setting_changed_meanwhile(env: dict[str, Path]) -> None:
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    g = plans[0]
+    path = env["two"] / ".claude" / "settings.local.json"
+    path.write_text(json.dumps({"autoMemoryDirectory": "~/elsewhere"}))
+    g.redirected.add(env["two"])
+    cm._unredirect(g, env["two"], path, SHARED)
+    assert g.stuck == []
+    assert env["two"] not in g.redirected
+    assert json.loads(path.read_text()) == {"autoMemoryDirectory": "~/elsewhere"}
+
+
+def test_unredirect_reports_settings_it_cannot_open(env: dict[str, Path]) -> None:
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    g = plans[0]
+    path = env["two"] / ".claude" / "settings.local.json"
+    path.write_text(json.dumps({"autoMemoryDirectory": SHARED}))
+    g.redirected.add(env["two"])
+    path.chmod(0o000)
+    try:
+        cm._unredirect(g, env["two"], path, SHARED)
+    finally:
+        path.chmod(0o600)
+    assert [clone for clone, _ in g.stuck] == [env["two"]]
+    assert env["two"] in g.redirected
+    assert json.loads(path.read_text()) == {"autoMemoryDirectory": SHARED}
+
+
+def test_unreadable_settings_at_apply_time_keep_the_source(env: dict[str, Path]) -> None:
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    path = env["one"] / ".claude" / "settings.local.json"
+    path.chmod(0o000)
+    try:
+        cm.apply(plans, today="2026-10-29")
+    finally:
+        path.chmod(0o600)
+    assert [clone for clone, _ in plans[0].failures] == [env["one"]]
+    assert (source(env, "one") / "a.md").is_file()
+    assert "autoMemoryDirectory" not in json.loads(path.read_text())
+    assert not source(env, "two").exists()

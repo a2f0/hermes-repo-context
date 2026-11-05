@@ -175,4 +175,11 @@ def run_claude_memory(args: argparse.Namespace) -> int:
     failures = [(clone, reason) for g in plans for clone, reason in g.failures]
     for clone, reason in failures:
         print(f"NOT REDIRECTED ({reason}): {claude_memory.display(clone, home)}")
-    return 1 if failures else 0
+    # Redirected, but its own memory stayed in place: Claude Code cannot see it until fixed.
+    stuck = [(clone, reason) for g in plans for clone, reason in g.stuck]
+    for clone, reason in stuck:
+        print(
+            f"STILL REDIRECTED ({reason}); remove {claude_memory.SETTING} from its "
+            f"{claude_memory.SETTINGS_FILE} to read its own memory again: {claude_memory.display(clone, home)}"
+        )
+    return 1 if failures or stuck else 0

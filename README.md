@@ -53,7 +53,10 @@ section in their system prompt.
   clone's `.claude/settings.local.json` (only where Git ignores that file), and
   then renames each merged source to `memory.merged-<date>`. A source stays in
   place when a file in it differs from the shared copy, it holds a symlink, or
-  its clone could not be redirected. Claude Code does not lock its memory, so
+  its clone could not be redirected. When memory appears in a source during
+  `--apply`, the redirect is undone; if that fails, the clone is listed as
+  `STILL REDIRECTED` and the command exits non-zero, so remove the setting by
+  hand. Claude Code does not lock its memory, so
   `--apply` refuses while any Claude Code session runs; close them first (or
   pass `--allow-running`, which can lose a racing write). It is a dry run until `--apply`;
   `--alias=<project-key>=owner/repo` (with `=`, since project keys start with
