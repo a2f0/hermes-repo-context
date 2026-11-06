@@ -23,6 +23,9 @@ testpaths = ["tests"]
 line-length = 120
 target-version = "py311"
 src = ["plugin", "tests"]
+# agent-tool installs and checks these skills (`agents:check`); they cannot be edited here, and
+# Ruff formats the Python examples in their Markdown.
+extend-exclude = [".agents/skills", ".claude/skills"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "S", "SIM", "RUF"]
