@@ -417,6 +417,15 @@ def test_interrupted_copy_leaves_no_partial_file(
     assert not source(env, "one").exists()
 
 
+def test_copy_of_a_longest_allowed_filename(env: dict[str, Path]) -> None:
+    name = "x" * 252 + ".md"  # 255 bytes, the usual NAME_MAX
+    (source(env, "one") / name).write_text("long")
+    cm.apply(cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"]), today="2026-10-29")
+    dest = env["claude"] / "repo-memory" / "a2f0" / "demo"
+    assert (dest / name).read_text() == "long"
+    assert not source(env, "one").exists()
+
+
 def test_memory_written_after_redirect_restores_the_setting(
     env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:

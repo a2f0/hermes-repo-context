@@ -716,7 +716,8 @@ def _copy(g: GroupPlan, src_dir: Path, f: Path, rel: PurePosixPath) -> None:
         # readable only by its owner), then hard-linked into place: the link is exclusive, so a
         # file written since planning is never overwritten, and a write that fails or is
         # interrupted never leaves a partial copy under the shared name.
-        fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.")
+        # A short fixed prefix: the target's own name can already be as long as the filesystem allows.
+        fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=".repo-context-copy.")
         try:
             with os.fdopen(fd, "wb") as out:
                 out.write(content)
