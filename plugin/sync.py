@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from . import identity as ident
 from .claude_memory import path_key, project_root
@@ -117,13 +117,23 @@ def sync(
     canonical: Callable[[str], str | None] = gh_canonical,
 ) -> SyncResult:
     roots = [Path(r).expanduser().resolve() for r in roots]
-    cache = {} if refresh else ident.load_cache()
+    previous = ident.load_cache()
+    cache: dict[str, Any] = {} if refresh else previous
     old_urls: dict[str, str] = dict(cache.get("urls") or {})
-    resolved: dict[str, str] = {
-        k: v
-        for k, v in (cache.get("names") or {}).items()
-        if isinstance(k, str) and ident.valid_identity(k) and isinstance(v, str) and ident.valid_identity(v)
-    }
+
+    def valid_names(data: dict[str, Any]) -> dict[str, str]:
+        return {
+            k: v
+            for k, v in (data.get("names") or {}).items()
+            if isinstance(k, str) and ident.valid_identity(k) and isinstance(v, str) and ident.valid_identity(v)
+        }
+
+    resolved = valid_names(cache)
+    # Last known answers, kept through --refresh: a lookup that fails falls back to them.
+    known = valid_names(previous)
+    # Names gh could not resolve in this run and had no earlier answer: used as they are for now,
+    # but never cached, so the next sync asks again instead of trusting a failure for good.
+    failed: set[str] = set()
     # Every repository seen at each Claude Code project key (paths such as foo-bar and foo_bar
     # share one), kept even across --refresh and after a clone is deleted: memory under a key
     # that held another repository belongs to neither on its own.
@@ -138,9 +148,17 @@ def sync(
         """GitHub's current name for *name* (renames followed), cached; other hosts unchanged."""
         if not ident.valid_identity(name):
             return name
+        if name in failed:
+            return name
         if name not in resolved:
             found = canonical(name)
-            resolved[name] = found if ident.valid_identity(found) else name
+            if ident.valid_identity(found):
+                resolved[name] = found
+            elif name in known:
+                resolved[name] = known[name]
+            else:
+                failed.add(name)
+                return name
         return resolved[name]
 
     for clone in find_clones(roots):
@@ -151,7 +169,8 @@ def sync(
             continue
         cached = old_urls.get(url)
         identity = cached if ident.valid_identity(cached) else current_name(parsed)
-        result.urls[url] = identity
+        if identity == cached or parsed not in failed:
+            result.urls[url] = identity
         seen = history.setdefault(path_key(str(project_root(clone))), [])
         if not any(ident.identity_key(current_name(s)) == ident.identity_key(identity) for s in seen):
             seen.append(identity)

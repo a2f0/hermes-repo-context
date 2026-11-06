@@ -184,3 +184,37 @@ def test_history_is_keyed_by_the_main_checkout(tmp_path: Path) -> None:
     subprocess.run([*git, "worktree", "add", "-q", str(tree)], check=True)
     result = sync_mod.sync([root], trust_store=FakeTrust([]), canonical=FakeGitHub())
     assert result.checkouts[str(tree)].get("reused") is True
+
+
+def test_a_failed_rename_lookup_is_retried_not_cached(workspace: dict[str, Path]) -> None:
+    # gh unreachable (offline, logged out, timed out): the clone keeps its remote's name for now.
+    offline_calls: list[str] = []
+
+    def offline(name: str) -> str | None:
+        offline_calls.append(name)
+        return None
+
+    result = sync_mod.sync([workspace["root"]], refresh=True, trust_store=FakeTrust([]), canonical=offline)
+    assert result.checkouts[str(workspace["balebase"])]["identity"] == "a2f0/stealth"
+    assert offline_calls.count("a2f0/stealth") == 1
+    cache = json.loads(ident.cache_path().read_text())
+    assert "a2f0/stealth" not in cache["names"]
+    assert "git@github.com:a2f0/stealth.git" not in cache["urls"]
+
+    # The next sync asks again instead of trusting the failure, and follows the rename.
+    github = FakeGitHub()
+    result = sync_mod.sync([workspace["root"]], trust_store=FakeTrust([]), canonical=github)
+    assert "a2f0/stealth" in github.calls
+    assert result.checkouts[str(workspace["balebase"])]["identity"] == "a2f0/balebase"
+    assert "reused" not in result.checkouts[str(workspace["balebase"])]
+    cache = json.loads(ident.cache_path().read_text())
+    assert cache["urls"]["git@github.com:a2f0/stealth.git"] == "a2f0/balebase"
+
+
+def test_refresh_keeps_the_last_known_rename_when_lookup_fails(workspace: dict[str, Path]) -> None:
+    sync_mod.sync([workspace["root"]], trust_store=FakeTrust([]), canonical=FakeGitHub())
+    result = sync_mod.sync([workspace["root"]], refresh=True, trust_store=FakeTrust([]), canonical=lambda _name: None)
+    assert result.checkouts[str(workspace["balebase"])]["identity"] == "a2f0/balebase"
+    cache = json.loads(ident.cache_path().read_text())
+    assert cache["names"]["a2f0/stealth"] == "a2f0/balebase"
+    assert cache["urls"]["git@github.com:a2f0/stealth.git"] == "a2f0/balebase"
