@@ -62,6 +62,23 @@ For example, capture the tests with
 the push log holds the pre-push hook's `check` receipt. `bun run check` is
 already an `agent-tool run-group` that records each step, so run it directly.
 
+## State machines
+
+Make implicit state machines explicit when you write or change code: one closed
+state type (a discriminated union, enum, or sealed type) carrying each state's
+data, typed events, and one pure transition function, with effects run on
+entering a state and async work tagged so only the current request can finish.
+Follow the `explicit-state-machines` skill for what to convert, what to leave
+alone, and how to prove behavior did not change; `agent-tool state-machines`
+lists leads. Reviews flag new implicit machines.
+
+Here a closed state type is an `Enum` or a union of frozen dataclasses tagged by
+a `Literal` `status` field, matched exhaustively with `assert_never` under
+strict mypy, with its transition function in the module that owns the state.
+State lives in `plugin/claude_memory.py` (apply's copy, index, verify,
+redirect, archive sequence) and `plugin/sync.py`; today both are linear
+pipelines and single-writer flags, so convert only when a change adds phases.
+
 ## Shared skills and shipping
 
 `@a2f0/agent-tool` is pinned exactly in `package.json` and `bun.lock`. After
