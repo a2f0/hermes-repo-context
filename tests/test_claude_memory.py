@@ -360,6 +360,72 @@ def test_failed_copy_keeps_every_source_that_relied_on_it(env: dict[str, Path]) 
         assert "autoMemoryDirectory" not in (cm.read_settings(env[clone] / ".claude" / "settings.local.json")[0] or {})
 
 
+@pytest.mark.parametrize("error", [OSError(28, "No space left on device"), KeyboardInterrupt()])
+def test_interrupted_copy_leaves_no_partial_file(
+    env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, error: BaseException
+) -> None:
+    import os
+
+    big = "x" * 4096
+    (source(env, "one") / "big.md").write_text(big)
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    real_fdopen = os.fdopen
+
+    class HalfWriter:
+        """A copy whose write stops halfway, as on a full disk or a Ctrl-C."""
+
+        def __init__(self, out: Any) -> None:
+            self.out = out
+
+        def __enter__(self) -> HalfWriter:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            self.out.close()
+
+        def write(self, data: bytes) -> int:
+            if data != big.encode():
+                return int(self.out.write(data))
+            self.out.write(data[: len(data) // 2])
+            self.out.flush()
+            raise error
+
+    def flaky_fdopen(fd: int, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+        out = real_fdopen(fd, mode, *args, **kwargs)
+        return HalfWriter(out) if "b" in mode else out
+
+    monkeypatch.setattr(os, "fdopen", flaky_fdopen)
+    dest = env["claude"] / "repo-memory" / "a2f0" / "demo"
+    if isinstance(error, KeyboardInterrupt):
+        with pytest.raises(KeyboardInterrupt):
+            cm.apply(plans, today="2026-10-29")
+    else:
+        cm.apply(plans, today="2026-10-29")
+        assert source(env, "one") in plans[0].kept_paths
+        one = cm.read_settings(env["one"] / ".claude" / "settings.local.json")[0] or {}
+        assert "autoMemoryDirectory" not in one
+    assert not (dest / "big.md").exists()
+    assert not [p.name for p in dest.iterdir() if p.name.startswith(".")]
+    assert (source(env, "one") / "big.md").read_text() == big
+
+    # Nothing half-written blocks the next run.
+    monkeypatch.setattr(os, "fdopen", real_fdopen)
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    assert plans[0].conflicts == []
+    cm.apply(plans, today="2026-10-29")
+    assert (dest / "big.md").read_text() == big
+    assert not source(env, "one").exists()
+
+
+def test_copy_of_a_longest_allowed_filename(env: dict[str, Path]) -> None:
+    name = "x" * 252 + ".md"  # 255 bytes, the usual NAME_MAX
+    (source(env, "one") / name).write_text("long")
+    cm.apply(cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"]), today="2026-10-29")
+    dest = env["claude"] / "repo-memory" / "a2f0" / "demo"
+    assert (dest / name).read_text() == "long"
+    assert not source(env, "one").exists()
+
+
 def test_memory_written_after_redirect_restores_the_setting(
     env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
