@@ -711,20 +711,30 @@ def _copy(g: GroupPlan, src_dir: Path, f: Path, rel: PurePosixPath) -> None:
         return
     try:
         _private_dirs(g.dest, target.parent)
-        # Exclusive: never overwrite a file written since planning. Private: the source may have
-        # been readable only by its owner.
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "wb") as out:
-            out.write(content)
+        st = f.stat()
+        # Written under a private temporary name (mkstemp: 0600, as the source may have been
+        # readable only by its owner), then hard-linked into place: the link is exclusive, so a
+        # file written since planning is never overwritten, and a write that fails or is
+        # interrupted never leaves a partial copy under the shared name.
+        fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.")
+        try:
+            with os.fdopen(fd, "wb") as out:
+                out.write(content)
+            os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns))
+            os.link(tmp, target)
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
     except FileExistsError:
         if not target.is_file() or target.is_symlink() or target.read_bytes() != content:
             failed("a file differs from the shared copy")
         return
-    except OSError:  # a file where a directory is needed, or the reverse
+    except (NotADirectoryError, IsADirectoryError):  # a file where a directory is needed
         failed("a file and a directory share a name")
         return
-    st = f.stat()
-    os.utime(target, ns=(st.st_atime_ns, st.st_mtime_ns))
+    except OSError as exc:
+        failed(f"copying it failed: {exc}")
+        return
 
 
 def _unredirect(g: GroupPlan, clone: Path, path: Path, target: str) -> None:
