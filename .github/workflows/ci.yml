@@ -24,7 +24,7 @@ jobs:
       - name: Set up pinned Bun, uv, and ShellCheck
         uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
-          version: 2026.11.0
+          version: 2026.11.8
           cache: true
 
       - name: Install locked agent tooling
@@ -68,7 +68,7 @@ jobs:
       - name: Set up pinned uv
         uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
-          version: 2026.11.0
+          version: 2026.11.8
           install_args: uv
           cache: true
 
@@ -92,7 +92,7 @@ jobs:
       - name: Set up pinned Bun
         uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
-          version: 2026.11.0
+          version: 2026.11.8
           install_args: bun
           cache: true
 
