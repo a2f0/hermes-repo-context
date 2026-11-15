@@ -8,7 +8,11 @@ trailers. Do not force-push or add attribution footers.
 
 ## Setup and validation
 
-Bun, uv, and ShellCheck are pinned in `.mise.toml`; uv selects Python from
+Bun, uv, and ShellCheck are pinned in `.mise.toml`, with URLs and checksums
+committed in `mise.lock`; regenerate it with `mise lock` whenever `.mise.toml`
+changes. CI's `jdx/mise-action` `version` must read the lockfile format (format
+4 needs mise 2026.11.1+), so move those pins before the lock's format. uv
+selects Python from
 `.python-version`. In agent shells, put the matching directories under
 `~/.local/share/mise/installs` first on `PATH` rather than running
 `mise trust`. Install with `bun install --frozen-lockfile` and
