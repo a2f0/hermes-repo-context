@@ -5,12 +5,12 @@
     "": {
       "name": "hermes-repo-context-tools",
       "devDependencies": {
-        "@a2f0/agent-tool": "0.1.51",
+        "@a2f0/agent-tool": "0.1.59",
       },
     },
   },
   "packages": {
-    "@a2f0/agent-tool": ["@a2f0/agent-tool@0.1.51", "", { "dependencies": { "@resvg/resvg-wasm": "2.6.2" }, "bin": { "agent-tool": "src/index.ts" } }, "sha512-sSJUTqAziD+Rx2ZfGdXY1nCQR0f22WGIdLXw4MkmDBNuORnWCLT8caTq3OX5mbs1i8AAak/qMQ7LqtDDVE6efg=="],
+    "@a2f0/agent-tool": ["@a2f0/agent-tool@0.1.59", "", { "dependencies": { "@resvg/resvg-wasm": "2.6.2" }, "bin": { "agent-tool": "src/index.ts" } }, "sha512-440GyauSfeqSMlcGHiOPMc3VJ+G8bbOEK8SlwjpAJAChWo/IAoNvYo8Xcid8XiyJirKA9kAHRwpkjnmU+R64ZQ=="],
 
     "@resvg/resvg-wasm": ["@resvg/resvg-wasm@2.6.2", "", {}, "sha512-FqALmHI8D4o6lk/LRWDnhw95z5eO+eAa6ORjVg09YRR7BkcM6oPHU9uyC0gtQG5vpFLvgpeU4+zEAz2H8APHNw=="],
   }

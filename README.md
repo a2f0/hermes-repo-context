@@ -80,7 +80,9 @@ bun run check
 ```
 
 `bun run check` runs Ruff (lint and format), mypy (strict), the pytest suite,
-ShellCheck, and the managed-tooling checks; the pre-push hook runs it too.
+ShellCheck, and the managed-tooling checks. The pre-push hook runs only the
+quick static checks (Ruff, mypy, and ShellCheck) after the shared push guards;
+CI runs the full suite.
 With Hermes installed, `hermes plugins doctor plugin --ci` and
 `hermes plugins validate plugin` run Hermes's own loader and catalog checks.
 

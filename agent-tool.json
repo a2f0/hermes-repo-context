@@ -55,9 +55,52 @@
         "workflow": "CI"
       }
     ],
-    "requireStrictBaseFreshness": true
+    "requireStrictBaseFreshness": false
   },
   "pr": {
     "rejectClaudeBranding": true
+  },
+  "pushGate": {
+    "steps": [
+      {
+        "label": "lint",
+        "command": [
+          "uv",
+          "run",
+          "--no-sync",
+          "ruff",
+          "check"
+        ]
+      },
+      {
+        "label": "format",
+        "command": [
+          "uv",
+          "run",
+          "--no-sync",
+          "ruff",
+          "format",
+          "--check"
+        ]
+      },
+      {
+        "label": "types",
+        "command": [
+          "uv",
+          "run",
+          "--no-sync",
+          "mypy"
+        ]
+      },
+      {
+        "label": "scripts",
+        "command": [
+          "bun",
+          "run",
+          "lint:scripts"
+        ]
+      }
+    ],
+    "budgetSeconds": 30
   }
 }

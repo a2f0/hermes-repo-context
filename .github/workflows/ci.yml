@@ -45,6 +45,10 @@ jobs:
       - name: Check managed agent skills and permissions
         run: bun run agents:check
 
+      # The tracked pre-push hook matches agent-tool's and its declared steps stay static.
+      - name: Check push gate
+        run: bun run agent-tool push-gate check
+
       - name: Install locked Python tooling
         run: uv sync --frozen
 
