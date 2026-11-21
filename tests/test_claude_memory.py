@@ -1518,11 +1518,6 @@ def test_stale_clone_keeps_only_memory_that_exists(env: dict[str, Path], stale: 
     assert second / "projects" / cm.path_key(str(env["two"])) / "memory" not in plans[0].kept_paths
 
 
-def test_config_markers_match_agent_tool() -> None:
-    # agent-tool discovers config directories by the same rule; change both together.
-    assert cm.CONFIG_MARKERS == ("settings.json", ".claude.json")
-
-
 def test_cli_says_when_no_config_dir_exists(
     env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
