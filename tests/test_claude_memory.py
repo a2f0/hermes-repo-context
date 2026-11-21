@@ -1491,6 +1491,26 @@ def test_stale_clone_keeps_only_memory_that_exists(env: dict[str, Path], stale: 
     assert second / "projects" / cm.path_key(str(env["two"])) / "memory" not in plans[0].kept_paths
 
 
+def test_config_markers_match_agent_tool() -> None:
+    # agent-tool discovers config directories by the same rule; change both together.
+    assert cm.CONFIG_MARKERS == ("settings.json", ".claude.json")
+
+
+def test_cli_says_when_no_config_dir_exists(
+    env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import argparse
+
+    ident.cache_path().write_text(json.dumps({"checkouts": checkouts(env)}))
+    bare = tmp_path / "bare-home"
+    bare.mkdir()
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: bare))
+    parser = argparse.ArgumentParser()
+    cli.setup(parser)
+    assert cli.main(parser.parse_args(["claude-memory"])) == 0
+    assert "Claude Code config directories: none found\n" in capsys.readouterr().out
+
+
 def test_cli_names_the_config_dirs_it_reads(
     env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1560,6 +1580,21 @@ def test_live_claude_dirs_without_sessions_skips_lsof(monkeypatch: pytest.Monkey
     assert cm.live_claude_dirs() == set()
     assert len(calls) == 1
     _fake_processes(monkeypatch, "", "", ps_status=1)
+    assert cm.live_claude_dirs() is None
+
+
+@pytest.mark.parametrize("lsof_status", [None, 2])  # None: lsof is not installed
+def test_live_claude_dirs_cannot_tell_when_lsof_fails(monkeypatch: pytest.MonkeyPatch, lsof_status: int | None) -> None:
+    ps = f"   12 {os.getuid()} S claude\n"
+
+    def run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[0] == "ps":
+            return subprocess.CompletedProcess(cmd, 0, ps, "")
+        if lsof_status is None:
+            raise FileNotFoundError(cmd[0])
+        return subprocess.CompletedProcess(cmd, lsof_status, "", "lsof: error")
+
+    monkeypatch.setattr(subprocess, "run", run)
     assert cm.live_claude_dirs() is None
 
 

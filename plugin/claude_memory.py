@@ -1154,34 +1154,41 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
         for src in g.archivable():
             units.setdefault(frozenset(src.all_clones) or frozenset({src.path}), []).append(src)
         for unit in units.values():
-            clones = unit[0].all_clones
-            if not all(_reads(c, g.target) for c in clones):
-                for src in unit:
-                    g.keep(src.path, "its clone no longer reads the shared directory")
-                continue
-            changed = [src for src in unit if src.changed()]
-            for src in changed:
-                g.keep(src.path, "changed since planning; re-run to merge it")
-            # Memory a session created since the redirect, in a config directory that had none.
-            appeared = [p for p in dict.fromkeys(_unplanned(g, clones, planned)) if _has_files(p)]
-            for p in appeared:
-                g.keep(p, "memory appeared while redirecting; re-run to merge it")
-            if changed or appeared:
-                for c in clones:
-                    _undo(g, c)
-            rest = [src for src in unit if src not in changed]
-            if any(isinstance(g.redirect(c), Stuck) for c in clones):
-                # Its setting must be removed by hand; it must then find all its memory in place.
-                for src in rest:
-                    g.keep(src.path, "its clone's redirect could not be undone")
-                continue
-            if (changed or appeared) and not all(_reads(c, g.target) for c in clones):
-                # Undone: the clone reads its own memory again, in every config directory.
-                for src in rest:
-                    g.keep(src.path, "its clone no longer reads the shared directory")
-                continue
-            for src in rest:
-                _archive(g, src, stamp)
+            _archive_unit(g, unit, planned, stamp)
+
+
+def _archive_unit(g: GroupPlan, unit: list[Source], planned: set[Path], stamp: str) -> None:
+    """Archive the sources of one clone (and its worktrees), one per config directory, or keep
+    them all: check that the clone reads the shared directory, then whether any source changed
+    or new memory appeared (undoing the redirect if so), then whether the redirect stands."""
+    clones = unit[0].all_clones
+    if not all(_reads(c, g.target) for c in clones):
+        for src in unit:
+            g.keep(src.path, "its clone no longer reads the shared directory")
+        return
+    changed = [src for src in unit if src.changed()]
+    for src in changed:
+        g.keep(src.path, "changed since planning; re-run to merge it")
+    # Memory a session created since the redirect, in a config directory that had none.
+    appeared = [p for p in dict.fromkeys(_unplanned(g, clones, planned)) if _has_files(p)]
+    for p in appeared:
+        g.keep(p, "memory appeared while redirecting; re-run to merge it")
+    if changed or appeared:
+        for c in clones:
+            _undo(g, c)
+    rest = [src for src in unit if src not in changed]
+    if any(isinstance(g.redirect(c), Stuck) for c in clones):
+        # Its setting must be removed by hand; it must then find all its memory in place.
+        for src in rest:
+            g.keep(src.path, "its clone's redirect could not be undone")
+        return
+    if (changed or appeared) and not all(_reads(c, g.target) for c in clones):
+        # Undone: the clone reads its own memory again, in every config directory.
+        for src in rest:
+            g.keep(src.path, "its clone no longer reads the shared directory")
+        return
+    for src in rest:
+        _archive(g, src, stamp)
 
 
 def _undo(g: GroupPlan, clone: Path) -> None:
