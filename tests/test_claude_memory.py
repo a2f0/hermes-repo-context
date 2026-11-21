@@ -1587,13 +1587,15 @@ def test_live_claude_dirs_finds_sessions_by_the_name_they_started_as(
         f"    1     0 Ss /sbin/launchd\n   12 {me:5} S+ claude\n   13 {me:5} Ss /Users/me/.local/bin/claude\n"
         f"   14 {me:5} Ss -zsh\n   15 {me:5} S node\n   16 {other:5} S+ claude\n"
         f"   17 {me:5} T /Applications/My Tools/claude\n   18 {me:5} Z claude\n   19 {me:5} S claude2\n"
+        # Without argv (from inside a sandbox, say), ps shows the kernel's name in parentheses.
+        f"   20 {me:5} S (2.1.325)\n   21 {me:5} S (id)\n   22 {me:5} S (2.1.325-beta)\n"
     )
-    lsof = f"p12\nfcwd\nn{a}\np13\nfcwd\nn{b}\np17\nfcwd\nn{b}\np19\nfcwd\nn{a}\n"
+    lsof = f"p12\nfcwd\nn{a}\np13\nfcwd\nn{b}\np17\nfcwd\nn{b}\np19\nfcwd\nn{a}\np20\nfcwd\nn{a}\n"
     calls = _fake_processes(monkeypatch, ps, lsof)
     assert cm.live_claude_dirs() == {a.resolve(), b.resolve()}
     assert calls == [
         ["ps", "-A", "-ww", "-o", "pid=", "-o", "uid=", "-o", "stat=", "-o", "comm="],
-        ["lsof", "-a", "-d", "cwd", "-p", "12,13,17,19", "-Fpn"],
+        ["lsof", "-a", "-d", "cwd", "-p", "12,13,17,19,20", "-Fpn"],
     ]
 
 

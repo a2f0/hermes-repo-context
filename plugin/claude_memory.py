@@ -1000,7 +1000,8 @@ def claude_pids() -> set[int] | None:
     matched. A ``claude2`` shell function still runs ``claude``, and a ``claude2`` link to the
     binary runs as ``claude2``; another ``claude-*`` tool only makes apply refuse, which
     ``--allow-running`` overrides. The kernel's own name for a native install is its versioned
-    binary (``2.1.325``), so ``lsof -c claude`` alone finds none of those sessions on macOS.
+    binary (``2.1.325``), so ``lsof -c claude`` alone finds none of those sessions on macOS;
+    ``ps`` shows that name in parentheses when it cannot read argv, so such a name counts too.
     Another user's sessions cannot write this user's private memory, and a zombie writes nothing."""
     try:
         out = subprocess.run(
@@ -1021,9 +1022,21 @@ def claude_pids() -> set[int] | None:
         fields = line.split(None, 3)
         if len(fields) < 4 or not fields[0].isdigit() or fields[1] != uid or fields[2].startswith("Z"):
             continue
-        if fields[3].strip().rsplit("/", 1)[-1].startswith("claude"):
+        if _claude_name(fields[3].strip().rsplit("/", 1)[-1]):
             pids.add(int(fields[0]))
     return pids
+
+
+_VERSION_RE = re.compile(r"\d+(\.\d+)+")
+
+
+def _claude_name(name: str) -> bool:
+    """Whether a process named *name* is Claude Code: ``claude...``, or the kernel's own name
+    in parentheses, which is ``(claude...)`` or a native install's version (``(2.1.325)``)."""
+    if name.startswith("(") and name.endswith(")"):
+        inner = name[1:-1]
+        return inner.startswith("claude") or _VERSION_RE.fullmatch(inner) is not None
+    return name.startswith("claude")
 
 
 def live_claude_dirs() -> set[Path] | None:
