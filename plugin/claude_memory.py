@@ -611,7 +611,11 @@ def _is_mergeable(path: Path, dest: Path) -> bool:
 
 def _dest_problem(root: Path, dest: Path) -> str:
     """Why *dest* must not be written, or "" when it is safe: *root* (``repo-memory``) and every
-    directory from it down to *dest* must be a real directory or not exist yet."""
+    directory from it down to *dest* must be a real directory or not exist yet, and the directory
+    holding *root* (``~/.claude``, which may link to a dotfiles checkout) must be one or be missing."""
+    claude_home = root.parent
+    if (claude_home.exists() or claude_home.is_symlink()) and not claude_home.is_dir():
+        return f"{claude_home} is not a directory"
     current = root
     for part in (None, *dest.relative_to(root).parts):
         if part is not None:

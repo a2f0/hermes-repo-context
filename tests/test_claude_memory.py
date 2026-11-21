@@ -1181,6 +1181,23 @@ def test_shared_store_is_created_without_a_default_config_dir(tmp_path: Path) ->
     assert json.loads((clone / ".claude" / "settings.local.json").read_text())["autoMemoryDirectory"] == SHARED
 
 
+@pytest.mark.parametrize("broken", ["dangling link", "file"])
+def test_claude_home_that_is_not_a_directory_blocks(tmp_path: Path, broken: str) -> None:
+    home = tmp_path / "home"
+    clone = make_clone(home / "github" / "demo", URL)
+    (clone / ".gitignore").write_text(".claude/settings.local.json\n")
+    memory = memory_in(config_dir(home, ".claude2"), cm.path_key(str(clone)), {"a.md": "a"})
+    if broken == "file":
+        (home / ".claude").write_text("")
+    else:
+        (home / ".claude").symlink_to(tmp_path / "dotfiles-not-checked-out")
+    plans = cm.plan({str(clone): {"url": URL, "identity": "a2f0/demo"}}, claude_home=home / ".claude", home=home)
+    assert plans[0].blocked == f"{home / '.claude'} is not a directory"
+    cm.apply(plans, today="2026-10-29")
+    assert (memory / "a.md").is_file()
+    assert not (clone / ".claude" / "settings.local.json").exists()
+
+
 def test_unmarked_claude_dir_is_not_a_config_dir(env: dict[str, Path]) -> None:
     stray = memory_in(env["home"] / ".claude-backup", cm.path_key(str(env["one"])), {"x.md": "x"})
     plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
