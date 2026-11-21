@@ -1117,10 +1117,7 @@ def test_broken_settings_link_marks_a_config_dir_that_blocks(env: dict[str, Path
     (second / "settings.json").symlink_to(tmp_path / "dotfiles-not-checked-out.json")
     assert cm.claude_config_dirs(env["home"], {}) == [env["claude"], second]
     plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
-    assert plans[0].blocked == (
-        "the user settings ~/.claude2/settings.json cannot be read; left alone"
-        " (not Claude Code's? pass --exclude-config-dir=~/.claude2)"
-    )
+    assert plans[0].blocked == "the user settings ~/.claude2/settings.json cannot be read; left alone"
 
 
 def test_extra_config_dirs_come_last_once_each(tmp_path: Path) -> None:
@@ -1128,12 +1125,6 @@ def test_extra_config_dirs_come_last_once_each(tmp_path: Path) -> None:
     config_dir(home, ".claude")
     outside = tmp_path / "xdg" / "claude2"
     assert cm.claude_config_dirs(home, {}, extra=[outside, home / ".claude", outside]) == [home / ".claude", outside]
-    backup = config_dir(home, ".claude.bak")
-    (home / ".claude-bak-link").symlink_to(backup, target_is_directory=True)
-    assert cm.claude_config_dirs(home, {}) == [home / ".claude", home / ".claude-bak-link"]
-    assert cm.claude_config_dirs(home, {}, exclude=[backup]) == [home / ".claude"]  # by real path
-    named = {"CLAUDE_CONFIG_DIR": str(outside)}
-    assert cm.claude_config_dirs(home, named, exclude=[outside, backup]) == [home / ".claude"]
 
 
 def test_memory_in_every_config_dir_is_merged(env: dict[str, Path]) -> None:
@@ -1215,16 +1206,15 @@ def test_config_dirs_sharing_a_real_path_are_read_once(env: dict[str, Path]) -> 
 def test_memory_setting_in_another_config_dirs_user_settings_is_respected(env: dict[str, Path]) -> None:
     second = config_dir(env["home"], ".claude2", json.dumps({"autoMemoryDirectory": "~/mine"}))
     plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
-    hint = " (not Claude Code's? pass --exclude-config-dir=~/.claude2)"
     assert plans[0].blocked == (
-        f"autoMemoryDirectory is set in the user settings ~/.claude2/settings.json (~/mine); left alone{hint}"
+        "autoMemoryDirectory is set in the user settings ~/.claude2/settings.json (~/mine); left alone"
     )
     cm.apply(plans, today="2026-10-29")
     assert source(env, "one").is_dir() and source(env, "two").is_dir()
     assert "autoMemoryDirectory" not in local_settings(env, "one")
     (second / "settings.json").write_text("{not json")
     plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
-    assert plans[0].blocked == f"the user settings ~/.claude2/settings.json cannot be read; left alone{hint}"
+    assert plans[0].blocked == "the user settings ~/.claude2/settings.json cannot be read; left alone"
 
 
 def test_alias_finds_its_memory_in_every_config_dir(env: dict[str, Path]) -> None:
@@ -1484,49 +1474,6 @@ def test_cli_names_the_config_dirs_it_reads(
     assert "Claude Code config directories: ~/.claude, ~/.claude2\n" in capsys.readouterr().out
     assert cli.main(parser.parse_args(["claude-memory", "--config-dir=~/.claude3"])) == 2
     assert "Invalid --config-dir" in capsys.readouterr().out
-    # Another tool's ~/.claude-* directory with settings Claude Code would not accept blocks the
-    # run until it is excluded.
-    config_dir(env["home"], ".claude-tool", "[1]")
-    assert cli.main(parser.parse_args(["claude-memory"])) == 0
-    out = capsys.readouterr().out
-    assert "--exclude-config-dir=~/.claude-tool)" in out
-    assert cli.main(parser.parse_args(["claude-memory", "--exclude-config-dir=~/.claude-tool"])) == 0
-    out = capsys.readouterr().out
-    assert "Claude Code config directories: ~/.claude, ~/.claude2\n" in out
-    assert "cannot be read" not in out
-    assert cli.main(parser.parse_args(["claude-memory", "--exclude-config-dir=~/.claude-gone"])) == 2
-    assert "Invalid --exclude-config-dir" in capsys.readouterr().out
-    # A directory Claude Code runs with cannot be excluded: redirected clones would stop reading
-    # its memory.
-    (env["home"] / ".claude2" / ".claude.json").write_text("{}")
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(outside))
-    for refused in ("~/.claude", "~/.claude2", str(outside)):
-        assert cli.main(parser.parse_args(["claude-memory", f"--exclude-config-dir={refused}"])) == 2
-        assert "Claude Code runs with it" in capsys.readouterr().out
-
-
-def test_cli_points_at_kept_memory_in_a_guessed_config_dir(
-    env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    import argparse
-
-    backup = config_dir(env["home"], ".claude.bak")  # cp -r ~/.claude ~/.claude.bak, long ago
-    memory_in(backup, cm.path_key(str(env["one"])), {"a.md": "an older a"})
-    ident.cache_path().write_text(json.dumps({"checkouts": checkouts(env)}))
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: env["home"]))
-    monkeypatch.setenv("HOME", str(env["home"]))  # for ~ in options
-    parser = argparse.ArgumentParser()
-    cli.setup(parser)
-    assert cli.main(parser.parse_args(["claude-memory"])) == 0
-    out = capsys.readouterr().out
-    assert "CONFLICT (kept the shared copy): ~/.claude.bak/" in out
-    assert "Memory above was kept in ~/.claude.bak; if one is not a Claude Code config directory" in out
-    assert cli.main(parser.parse_args(["claude-memory", "--exclude-config-dir=~/.claude.bak"])) == 0
-    assert ".claude.bak" not in capsys.readouterr().out
-    # Memory kept in a directory Claude Code runs with gets no such note.
-    (backup / ".claude.json").write_text("{}")
-    assert cli.main(parser.parse_args(["claude-memory"])) == 0
-    assert "Memory above was kept in" not in capsys.readouterr().out
 
 
 def _fake_processes(monkeypatch: pytest.MonkeyPatch, ps: str, lsof: str, ps_status: int = 0) -> list[list[str]]:

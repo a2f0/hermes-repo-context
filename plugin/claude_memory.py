@@ -44,33 +44,12 @@ CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR"
 CONFIG_MARKERS = ("settings.json", ".claude.json")
 
 
-def claude_runs_with(config_dir: Path, home: Path, environ: Mapping[str, str] | None = None) -> str:
-    """Why Claude Code is known to run with *config_dir* (so excluding it would hide memory a
-    redirected clone no longer reads), or "" when discovery only guessed it from a marker."""
-    env = os.environ if environ is None else environ
-    real = os.path.realpath(config_dir)
-    if real == os.path.realpath(home / ".claude"):
-        return "it is ~/.claude"
-    named = env.get(CONFIG_DIR_ENV)
-    if named and real == os.path.realpath(os.path.abspath(named)):
-        return f"${CONFIG_DIR_ENV} names it"
-    if os.path.lexists(config_dir / ".claude.json"):
-        return "it holds .claude.json, which Claude Code writes in a directory it runs with"
-    return ""
-
-
-def claude_config_dirs(
-    home: Path,
-    environ: Mapping[str, str] | None = None,
-    extra: Iterable[Path] = (),
-    exclude: Iterable[Path] = (),
-) -> list[Path]:
+def claude_config_dirs(home: Path, environ: Mapping[str, str] | None = None, extra: Iterable[Path] = ()) -> list[Path]:
     """Every Claude Code config directory, once each by real path: the one ``$CLAUDE_CONFIG_DIR``
     names (when set and non-empty), ``~/.claude`` (when it exists), then, by name, every other
     directory directly in *home* whose name starts with ``.claude`` and that holds one of
     ``CONFIG_MARKERS`` (a broken link counts, so its unreadable settings block the run as they
-    would in ``~/.claude``), then *extra*; none whose real path is one of *exclude*, such as a
-    backup copy of ``~/.claude``. A file such as ``~/.claude.json`` never counts."""
+    would in ``~/.claude``), then *extra*. A file such as ``~/.claude.json`` never counts."""
     env = os.environ if environ is None else environ
     candidates = []
     named = env.get(CONFIG_DIR_ENV)
@@ -89,7 +68,7 @@ def claude_config_dirs(
     ]
     candidates += [Path(os.path.abspath(p)) for p in extra]
     dirs: list[Path] = []
-    seen: set[str] = {os.path.realpath(p) for p in exclude}
+    seen: set[str] = set()
     for candidate in candidates:
         real = os.path.realpath(candidate)
         if real not in seen:
@@ -671,13 +650,10 @@ def plan(
     for config_dir in dirs:
         user_path = display(config_dir / "settings.json", home)
         user_value, user_ok = configured_memory(config_dir / "settings.json")
-        # Discovery can mistake another tool's ~/.claude-* directory for Claude Code's.
-        guessed = not claude_runs_with(config_dir, home)
-        hint = f" (not Claude Code's? pass --exclude-config-dir={display(config_dir, home)})" if guessed else ""
         if user_value:
-            user_setting = f"{SETTING} is set in the user settings {user_path} ({user_value}); left alone{hint}"
+            user_setting = f"{SETTING} is set in the user settings {user_path} ({user_value}); left alone"
         elif not user_ok:
-            user_setting = f"the user settings {user_path} cannot be read; left alone{hint}"
+            user_setting = f"the user settings {user_path} cannot be read; left alone"
         if user_setting:
             break
     worktrees_of: dict[Path, list[Path]] = {}

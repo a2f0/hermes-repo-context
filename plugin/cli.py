@@ -68,14 +68,6 @@ def setup(parser: argparse.ArgumentParser) -> None:
             "and ~/.claude* directories holding settings.json or .claude.json); repeatable"
         ),
     )
-    c.add_argument(
-        "--exclude-config-dir",
-        action="append",
-        default=[],
-        type=Path,
-        metavar="DIR",
-        help="do not read this directory, such as a backup of ~/.claude or another tool's; repeatable",
-    )
 
     parser.set_defaults(func=main)
 
@@ -143,19 +135,11 @@ def run_claude_memory(args: argparse.Namespace) -> int:
         return 1
     home = Path.home()
     extra = [Path(os.path.expanduser(d)) for d in args.config_dir]
-    exclude = [Path(os.path.expanduser(d)) for d in args.exclude_config_dir]
-    for option, dirs in (("--config-dir", extra), ("--exclude-config-dir", exclude)):
-        for d in dirs:
-            if not d.is_dir():
-                print(f"Invalid {option} {str(d)!r}; not a directory.")
-                return 2
-    for d in exclude:
-        # The redirect applies to every config directory's sessions: this one's memory would go unread.
-        why = claude_memory.claude_runs_with(d, home)
-        if why:
-            print(f"Invalid --exclude-config-dir {str(d)!r}: Claude Code runs with it ({why}).")
+    for d in extra:
+        if not d.is_dir():
+            print(f"Invalid --config-dir {str(d)!r}; not a directory.")
             return 2
-    config_dirs = claude_memory.claude_config_dirs(home, extra=extra, exclude=exclude)
+    config_dirs = claude_memory.claude_config_dirs(home, extra=extra)
     try:
         plans = claude_memory.plan(
             checkouts,
@@ -215,18 +199,6 @@ def run_claude_memory(args: argparse.Namespace) -> int:
     for g in plans:
         for path, reason in g.kept:
             print(f"KEPT in place ({reason}): {claude_memory.display(path, home)}")
-    # A directory found only by its marker may be a backup or another tool's.
-    explicit = {os.path.realpath(d) for d in extra}
-    guessed = [
-        d for d in config_dirs if os.path.realpath(d) not in explicit and not claude_memory.claude_runs_with(d, home)
-    ]
-    held = [p for g in plans for p in (*g.conflicts, *g.kept_paths)]
-    named = sorted({claude_memory.display(d, home) for d in guessed for p in held if p.is_relative_to(d)})
-    if named:
-        print(
-            f"Memory above was kept in {', '.join(named)}; if one is not a Claude Code config directory "
-            "(a backup, or another tool's), re-run with --exclude-config-dir."
-        )
     failures = [(clone, reason) for g in plans for clone, reason in g.failures]
     for clone, reason in failures:
         print(f"NOT REDIRECTED ({reason}): {claude_memory.display(clone, home)}")
