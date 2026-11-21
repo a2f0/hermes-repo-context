@@ -1409,6 +1409,16 @@ def test_claimant_waits_for_its_aliased_memory_in_every_config_dir(
     assert local_settings(env, "two")["autoMemoryDirectory"] == SHARED
 
 
+def test_empty_claimed_memory_in_another_config_dir_does_not_block(env: dict[str, Path]) -> None:
+    second = config_dir(env["home"], ".claude2")
+    key = cm.path_key(str(env["two"]))
+    (second / "projects" / key / "memory").mkdir(parents=True)  # a session that saved nothing
+    aliases = {key: "a2f0/old"}
+    cm.apply(cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"], aliases=aliases), today="2026-10-29")
+    assert (env["claude"] / "repo-memory" / "a2f0" / "old" / "b.md").read_text() == "b"
+    assert local_settings(env, "two")["autoMemoryDirectory"] == SHARED
+
+
 def test_redirect_transitions() -> None:
     path, value = Path("/c/.claude/settings.local.json"), SHARED
     own, before = cm.OwnMemory(), cm.SharedBefore()

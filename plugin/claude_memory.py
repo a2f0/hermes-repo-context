@@ -1125,7 +1125,8 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
                 g.keep(s.path, "the shared directory does not hold all of it")
         planned = {s.path for s in g.sources}
         for clone, path, data in g.settings_changes:
-            claimed = [p for p in g.claims.get(clone, []) if p.exists() or p.is_symlink()]
+            # An empty directory holds nothing to merge (and is never archived), so it does not wait.
+            claimed = [p for p in g.claims.get(clone, []) if _has_files(p)]
             if claimed:
                 # Its old memory belongs to an alias that has not merged it; keep reading it.
                 for p in claimed:
