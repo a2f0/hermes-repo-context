@@ -1291,7 +1291,9 @@ def test_memory_appearing_in_another_config_dir_blocks_the_redirect(env: dict[st
     plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
     late = memory_in(second, cm.path_key(str(env["one"])), {"late.md": "late"})
     cm.apply(plans, today="2026-10-29")
-    assert dict(plans[0].kept)[late] == "memory appeared since planning; re-run to merge it"
+    kept = dict(plans[0].kept)
+    assert kept[late] == "memory appeared since planning; re-run to merge it"
+    assert kept[source(env, "one")] == "its clone's memory appeared in another config directory; re-run"
     assert (late / "late.md").is_file()
     assert (source(env, "one") / "a.md").is_file()
     assert "autoMemoryDirectory" not in local_settings(env, "one")
@@ -1548,7 +1550,7 @@ def test_live_claude_dirs_finds_sessions_by_the_name_they_started_as(
     calls = _fake_processes(monkeypatch, ps, lsof)
     assert cm.live_claude_dirs() == {a.resolve(), b.resolve()}
     assert calls == [
-        ["ps", "-A", "-o", "pid=", "-o", "uid=", "-o", "stat=", "-o", "comm="],
+        ["ps", "-A", "-ww", "-o", "pid=", "-o", "uid=", "-o", "stat=", "-o", "comm="],
         ["lsof", "-a", "-d", "cwd", "-p", "12,13,17,19", "-Fpn"],
     ]
 

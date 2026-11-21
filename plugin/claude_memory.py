@@ -1000,7 +1000,7 @@ def claude_pids() -> set[int] | None:
     Another user's sessions cannot write this user's private memory, and a zombie writes nothing."""
     try:
         out = subprocess.run(
-            ["ps", "-A", "-o", "pid=", "-o", "uid=", "-o", "stat=", "-o", "comm="],
+            ["ps", "-A", "-ww", "-o", "pid=", "-o", "uid=", "-o", "stat=", "-o", "comm="],  # -ww: never cut a name
             capture_output=True,
             text=True,
             errors="replace",
@@ -1135,6 +1135,9 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
             if appeared:
                 for p in appeared:
                     g.keep(p, "memory appeared since planning; re-run to merge it")
+                for s in g.sources:
+                    if clone in s.all_clones:
+                        g.keep(s.path, "its clone's memory appeared in another config directory; re-run")
                 continue
             if not any(clone in s.all_clones and s.path in g.kept_paths for s in g.sources):
                 _redirect(g, clone, path, data[SETTING])
