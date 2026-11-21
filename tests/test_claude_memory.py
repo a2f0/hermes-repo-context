@@ -1003,7 +1003,7 @@ def test_unredirect_reports_settings_it_cannot_read(env: dict[str, Path], tmp_pa
     g = plans[0]
     path = env["two"] / ".claude" / "settings.local.json"
     path.write_text("{not json")
-    g.redirected.add(env["two"])
+    g.redirects[env["two"]] = cm.RedirectedNow(path, SHARED)  # as apply leaves a redirect it made
     cm._unredirect(g, env["two"], path, SHARED)
     assert [clone for clone, _ in g.stuck] == [env["two"]]
     assert path.read_text() == "{not json"
@@ -1014,7 +1014,7 @@ def test_unredirect_leaves_a_setting_changed_meanwhile(env: dict[str, Path]) -> 
     g = plans[0]
     path = env["two"] / ".claude" / "settings.local.json"
     path.write_text(json.dumps({"autoMemoryDirectory": "~/elsewhere"}))
-    g.redirected.add(env["two"])
+    g.redirects[env["two"]] = cm.RedirectedNow(path, SHARED)  # as apply leaves a redirect it made
     cm._unredirect(g, env["two"], path, SHARED)
     assert g.stuck == []
     assert env["two"] not in g.redirected
@@ -1026,7 +1026,7 @@ def test_unredirect_reports_settings_it_cannot_open(env: dict[str, Path]) -> Non
     g = plans[0]
     path = env["two"] / ".claude" / "settings.local.json"
     path.write_text(json.dumps({"autoMemoryDirectory": SHARED}))
-    g.redirected.add(env["two"])
+    g.redirects[env["two"]] = cm.RedirectedNow(path, SHARED)  # as apply leaves a redirect it made
     path.chmod(0o000)
     try:
         cm._unredirect(g, env["two"], path, SHARED)
@@ -1351,6 +1351,61 @@ def test_memory_appearing_in_another_config_dir_before_archiving_undoes_the_redi
     assert not source(env, "two").exists()
 
 
+@pytest.mark.parametrize(
+    ("held_in", "conflict_in"),
+    [((".claude", ".claude2"), ".claude"), ((".claude", ".claude2"), ".claude2"), ((".claude2",), ".claude2")],
+)
+def test_claimant_waits_for_its_aliased_memory_in_every_config_dir(
+    env: dict[str, Path], held_in: tuple[str, ...], conflict_in: str
+) -> None:
+    import shutil
+
+    second = config_dir(env["home"], ".claude2")
+    key = cm.path_key(str(env["two"]))
+    claimed = {".claude": source(env, "two"), ".claude2": second / "projects" / key / "memory"}
+    if ".claude" not in held_in:
+        shutil.rmtree(claimed[".claude"])
+    if ".claude2" in held_in:
+        memory_in(second, key, {"e.md": "e"})
+    (claimed[conflict_in] / "x.md").write_text("claimed x")
+    old_dest = env["claude"] / "repo-memory" / "a2f0" / "old"
+    old_dest.mkdir(parents=True)
+    (old_dest / "x.md").write_text("old repository's different x")
+    aliases = {key: "a2f0/old"}
+    cm.apply(cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"], aliases=aliases), today="2026-10-29")
+    # The memory that conflicts stays claimed, so clone two keeps reading its own memory.
+    assert (claimed[conflict_in] / "x.md").read_text() == "claimed x"
+    for name in held_in:
+        assert claimed[name].exists() == (name == conflict_in)
+    assert not (env["two"] / ".claude" / "settings.local.json").exists()
+    (old_dest / "x.md").write_text("claimed x")
+    cm.apply(cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"], aliases=aliases), today="2026-10-29")
+    assert not claimed[conflict_in].exists()
+    assert local_settings(env, "two")["autoMemoryDirectory"] == SHARED
+
+
+def test_redirect_transitions() -> None:
+    path, value = Path("/c/.claude/settings.local.json"), SHARED
+    own, before = cm.OwnMemory(), cm.SharedBefore()
+    now = cm.RedirectedNow(path, value)
+    wrote, write_failed = cm.Wrote(path, value), cm.WriteFailed("no space")
+    restored, restore_failed = cm.Restored(), cm.RestoreFailed("read-only")
+    assert cm.redirect_transition(own, wrote) == now
+    assert cm.redirect_transition(own, write_failed) == cm.RedirectFailed("no space")
+    assert cm.redirect_transition(now, restored) == cm.Undone()
+    assert cm.redirect_transition(now, restore_failed) == cm.Stuck("read-only")
+    # Only a redirect this run made is undone, once; only a clone reading its own memory is
+    # redirected. Every other event leaves the state alone.
+    for state in (own, before, now, cm.Undone(), cm.RedirectFailed("x"), cm.Stuck("x")):
+        for event in (wrote, write_failed, restored, restore_failed):
+            if (state, event) not in {(own, wrote), (own, write_failed), (now, restored), (now, restore_failed)}:
+                assert cm.redirect_transition(state, event) == state, (state, event)
+    reading = [
+        s.status for s in (own, before, now, cm.Undone(), cm.RedirectFailed("x"), cm.Stuck("x")) if cm.reads_shared(s)
+    ]
+    assert reading == ["shared_before", "redirected_now", "stuck"]
+
+
 def _redirect_then(env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, then: Any) -> list[Path]:
     """After clone one is redirected, run *then* and make its ``.claude`` read-only, so undoing
     the redirect fails; returns the directories to unlock."""
@@ -1444,19 +1499,20 @@ def test_live_claude_dirs_finds_sessions_by_the_name_they_started_as(
     b.mkdir()
     me, other = os.getuid(), os.getuid() + 1
     # A native install's kernel name is its version (2.1.325), so lsof -c claude finds nothing;
-    # ps reports the name it started as, which a claude2 wrapper keeps. Another user's session
-    # cannot write this user's memory, a zombie writes nothing, and other claude-* tools are not
-    # Claude Code.
+    # ps reports the name it started as: claude from a claude2 shell function, claude2 from a link
+    # to the binary. Another user's session cannot write this user's memory, a zombie writes
+    # nothing, and a stopped session can resume.
     ps = (
         f"    1     0 Ss /sbin/launchd\n   12 {me:5} S+ claude\n   13 {me:5} Ss /Users/me/.local/bin/claude\n"
         f"   14 {me:5} Ss -zsh\n   15 {me:5} S node\n   16 {other:5} S+ claude\n"
-        f"   17 {me:5} T /Applications/My Tools/claude\n   18 {me:5} Z claude\n   19 {me:5} S claude-squad\n"
+        f"   17 {me:5} T /Applications/My Tools/claude\n   18 {me:5} Z claude\n   19 {me:5} S claude2\n"
     )
-    calls = _fake_processes(monkeypatch, ps, f"p12\nfcwd\nn{a}\np13\nfcwd\nn{b}\np17\nfcwd\nn{b}\n")
+    lsof = f"p12\nfcwd\nn{a}\np13\nfcwd\nn{b}\np17\nfcwd\nn{b}\np19\nfcwd\nn{a}\n"
+    calls = _fake_processes(monkeypatch, ps, lsof)
     assert cm.live_claude_dirs() == {a.resolve(), b.resolve()}
     assert calls == [
         ["ps", "-A", "-o", "pid=", "-o", "uid=", "-o", "stat=", "-o", "comm="],
-        ["lsof", "-a", "-d", "cwd", "-p", "12,13,17", "-Fpn"],
+        ["lsof", "-a", "-d", "cwd", "-p", "12,13,17,19", "-Fpn"],
     ]
 
 

@@ -67,13 +67,13 @@ section in their system prompt.
   memory appears in a source during `--apply`, the redirect is undone; if that
   fails, the clone is listed as `STILL REDIRECTED` and the command exits
   non-zero, so remove the setting by hand. Claude Code does not lock its memory,
-  so `--apply` refuses while any Claude Code session runs (any process started
-  as `claude`, which a `claude2` wrapper still is); close them first (or pass
-  `--allow-running`, which can lose a racing write). It is a dry run until
-  `--apply`; `--alias=<project-key>=owner/repo` (with `=`, since project keys
-  start with `-`) merges memory whose checkout is gone, from that key in every
-  config directory. A symlinked memory directory does not work, because Claude
-  Code resolves the real path and refuses the write.
+  so `--apply` refuses while any Claude Code session runs (any of your processes
+  whose name starts with `claude`, which covers a `claude2` wrapper); close them
+  first (or pass `--allow-running`, which can lose a racing write). It is a dry
+  run until `--apply`; `--alias=<project-key>=owner/repo` (with `=`, since
+  project keys start with `-`) merges memory whose checkout is gone, from that
+  key in every config directory. A symlinked memory directory does not work,
+  because Claude Code resolves the real path and refuses the write.
 - **`hermes repo-context show [path]`** prints the section a session there
   would get.
 

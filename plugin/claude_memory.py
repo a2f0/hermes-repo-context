@@ -30,7 +30,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Literal, assert_never
 
 from .identity import CheckoutInfo, git, git_env, remote_url, valid_identity
 
@@ -303,6 +303,121 @@ class Source:
         return fingerprint(self.path) != self.fingerprint
 
 
+# One clone's redirect: which memory its Claude Code sessions read, as planning found it and as
+# apply changes it. Every config directory's sessions read the same settings file, so one state
+# covers the clone in all of them.
+
+
+@dataclass(frozen=True)
+class OwnMemory:
+    """It reads its own memory directories: not redirected."""
+
+    status: Literal["own"] = "own"
+
+
+@dataclass(frozen=True)
+class SharedBefore:
+    """It read the shared directory before this run; apply never undoes that."""
+
+    status: Literal["shared_before"] = "shared_before"
+
+
+@dataclass(frozen=True)
+class RedirectedNow:
+    """This run pointed it at the shared directory by writing *value* to *path*, and may still
+    undo that while its memory merges."""
+
+    path: Path
+    value: str
+    status: Literal["redirected_now"] = "redirected_now"
+
+
+@dataclass(frozen=True)
+class Undone:
+    """This run redirected it, then it was pointed back at its own memory (by apply, or by a
+    session that changed the setting meanwhile)."""
+
+    status: Literal["undone"] = "undone"
+
+
+@dataclass(frozen=True)
+class RedirectFailed:
+    """Writing the redirect failed, so it still reads its own memory."""
+
+    reason: str
+    status: Literal["failed"] = "failed"
+
+
+@dataclass(frozen=True)
+class Stuck:
+    """This run redirected it and could not undo that: its own memory stays unread until the
+    setting is removed by hand."""
+
+    reason: str
+    status: Literal["stuck"] = "stuck"
+
+
+RedirectState = OwnMemory | SharedBefore | RedirectedNow | Undone | RedirectFailed | Stuck
+
+
+@dataclass(frozen=True)
+class Wrote:
+    """The redirect was written."""
+
+    path: Path
+    value: str
+
+
+@dataclass(frozen=True)
+class WriteFailed:
+    """The redirect could not be written."""
+
+    reason: str
+
+
+@dataclass(frozen=True)
+class Restored:
+    """The setting no longer names the shared directory: apply removed it, or a session changed it."""
+
+
+@dataclass(frozen=True)
+class RestoreFailed:
+    """Removing the setting failed."""
+
+    reason: str
+
+
+RedirectEvent = Wrote | WriteFailed | Restored | RestoreFailed
+
+
+def redirect_transition(state: RedirectState, event: RedirectEvent) -> RedirectState:
+    """The next state of a clone's redirect. Each event applies in one state and is ignored in
+    every other: only a clone reading its own memory is redirected, and only a redirect this run
+    made is undone, at most once."""
+    match event:
+        case Wrote(path=path, value=value):
+            return RedirectedNow(path, value) if isinstance(state, OwnMemory) else state
+        case WriteFailed(reason=reason):
+            return RedirectFailed(reason) if isinstance(state, OwnMemory) else state
+        case Restored():
+            return Undone() if isinstance(state, RedirectedNow) else state
+        case RestoreFailed(reason=reason):
+            return Stuck(reason) if isinstance(state, RedirectedNow) else state
+        case _:
+            assert_never(event)
+
+
+def reads_shared(state: RedirectState) -> bool:
+    """Whether a clone in *state* reads the shared directory."""
+    match state:
+        case SharedBefore() | RedirectedNow() | Stuck():
+            return True
+        case OwnMemory() | Undone() | RedirectFailed():
+            return False
+        case _:
+            assert_never(state)
+
+
 @dataclass
 class GroupPlan:
     identity: str
@@ -319,16 +434,13 @@ class GroupPlan:
     watch: set[Path] = field(default_factory=set)  # other clones whose memory directory is a source
     # clone -> its memory directories (one per config directory) that an alias claims
     claims: dict[Path, list[Path]] = field(default_factory=dict)
-    failures: list[tuple[Path, str]] = field(default_factory=list)  # clones apply could not redirect
-    # Clones apply redirected but could not point back at memory that stayed in place.
-    stuck: list[tuple[Path, str]] = field(default_factory=list)
+    redirects: dict[Path, RedirectState] = field(default_factory=dict)  # clone -> its redirect, when not own
     failed_rels: set[PurePosixPath] = field(default_factory=set)  # copies that failed at apply time
     conflicts: list[Path] = field(default_factory=list)
     skipped: list[Path] = field(default_factory=list)
     index_before: int = 0
     index: list[str] = field(default_factory=list)
     settings: list[tuple[Path, Path, dict[str, Any] | None, str]] = field(default_factory=list)
-    redirected: set[Path] = field(default_factory=set)
     kept: list[tuple[Path, str]] = field(default_factory=list)
     blocked: str = ""
 
@@ -343,6 +455,27 @@ class GroupPlan:
     @property
     def settings_changes(self) -> list[tuple[Path, Path, dict[str, Any]]]:
         return [(clone, path, data) for clone, path, data, _ in self.settings if data is not None]
+
+    def redirect(self, clone: Path) -> RedirectState:
+        return self.redirects.get(clone, OwnMemory())
+
+    def advance(self, clone: Path, event: RedirectEvent) -> None:
+        self.redirects[clone] = redirect_transition(self.redirect(clone), event)
+
+    @property
+    def redirected(self) -> set[Path]:
+        """Clones that read the shared directory."""
+        return {clone for clone, state in self.redirects.items() if reads_shared(state)}
+
+    @property
+    def failures(self) -> list[tuple[Path, str]]:
+        """Clones apply could not redirect, and why."""
+        return [(clone, s.reason) for clone, s in self.redirects.items() if isinstance(s, RedirectFailed)]
+
+    @property
+    def stuck(self) -> list[tuple[Path, str]]:
+        """Clones apply redirected but could not point back at memory that stayed in place."""
+        return [(clone, s.reason) for clone, s in self.redirects.items() if isinstance(s, Stuck)]
 
     @property
     def kept_paths(self) -> set[Path]:
@@ -458,7 +591,7 @@ def _plan_settings(g: GroupPlan, clones: list[Path], target: str, unclean: set[P
             continue
         current = data.get(SETTING)
         if current == target:
-            g.redirected.add(clone)
+            g.redirects[clone] = SharedBefore()
         elif current:
             g.settings.append((clone, path, None, f"already set to {current}; left alone"))
         elif clone in unclean:
@@ -739,7 +872,7 @@ def _write_index(g: GroupPlan) -> None:
 
 def _keep_clone(g: GroupPlan, clone: Path, reason: str) -> None:
     """Keep the sources *clone* reads, and record that *clone* was not redirected."""
-    g.failures.append((clone, reason))
+    g.advance(clone, WriteFailed(reason))
     for s in g.sources:
         if clone in s.all_clones:
             g.keep(s.path, reason)
@@ -770,7 +903,7 @@ def _redirect(g: GroupPlan, clone: Path, path: Path, target: str) -> None:
     if not written:
         _keep_clone(g, clone, "its settings changed while being written; re-run")
         return
-    g.redirected.add(clone)
+    g.advance(clone, Wrote(path, target))
 
 
 def _copy(g: GroupPlan, src_dir: Path, f: Path, rel: PurePosixPath) -> None:
@@ -824,7 +957,7 @@ def _copy(g: GroupPlan, src_dir: Path, f: Path, rel: PurePosixPath) -> None:
 def _unredirect(g: GroupPlan, clone: Path, path: Path, target: str) -> None:
     """Undo a redirect made in this run, so a clone whose memory changed keeps reading it. The
     settings are re-read and replaced only if unchanged meanwhile; a clone that still reads the
-    shared directory afterwards is recorded in ``g.stuck``, since its own memory stays unread."""
+    shared directory afterwards is ``Stuck``, since its own memory stays unread."""
     reason = "its settings kept changing; check them"
     for _attempt in range(5):
         try:
@@ -837,7 +970,7 @@ def _unredirect(g: GroupPlan, clone: Path, path: Path, target: str) -> None:
             reason = f"its settings cannot be restored: {note}"
             break
         if data.get(SETTING) != target:
-            g.redirected.discard(clone)  # a session changed it meanwhile; it no longer reads dest
+            g.advance(clone, Restored())  # a session changed it meanwhile; it no longer reads dest
             return
         data.pop(SETTING)
         try:
@@ -846,17 +979,19 @@ def _unredirect(g: GroupPlan, clone: Path, path: Path, target: str) -> None:
             reason = f"restoring its settings failed: {exc}"
             break
         if written:
-            g.redirected.discard(clone)
+            g.advance(clone, Restored())
             return
-    g.stuck.append((clone, reason))
+    g.advance(clone, RestoreFailed(reason))
 
 
 def claude_pids() -> set[int] | None:
-    """This user's running Claude Code processes, or None when ``ps`` fails: those started as
-    ``claude`` (argv[0] on macOS, the process name on Linux), as a ``claude2`` shell function
-    still runs it. The kernel's own name for a native install is its versioned binary
-    (``2.1.325``), so ``lsof -c claude`` alone finds none of those sessions on macOS. Another
-    user's sessions cannot write this user's private memory, and a zombie writes nothing."""
+    """This user's running Claude Code processes, or None when ``ps`` fails: those whose name
+    (argv[0] on macOS, the process name on Linux) starts with ``claude``, as ``lsof -c claude``
+    matched. A ``claude2`` shell function still runs ``claude``, and a ``claude2`` link to the
+    binary runs as ``claude2``; another ``claude-*`` tool only makes apply refuse, which
+    ``--allow-running`` overrides. The kernel's own name for a native install is its versioned
+    binary (``2.1.325``), so ``lsof -c claude`` alone finds none of those sessions on macOS.
+    Another user's sessions cannot write this user's private memory, and a zombie writes nothing."""
     try:
         out = subprocess.run(
             ["ps", "-A", "-o", "pid=", "-o", "uid=", "-o", "stat=", "-o", "comm="],
@@ -876,7 +1011,7 @@ def claude_pids() -> set[int] | None:
         fields = line.split(None, 3)
         if len(fields) < 4 or not fields[0].isdigit() or fields[1] != uid or fields[2].startswith("Z"):
             continue
-        if fields[3].strip().rsplit("/", 1)[-1] == "claude":
+        if fields[3].strip().rsplit("/", 1)[-1].startswith("claude"):
             pids.add(int(fields[0]))
     return pids
 
@@ -983,7 +1118,6 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
             elif not _merged(g, s.path):
                 g.keep(s.path, "the shared directory does not hold all of it")
         planned = {s.path for s in g.sources}
-        redirected_now: dict[Path, tuple[Path, str]] = {}
         for clone, path, data in g.settings_changes:
             claimed = [p for p in g.claims.get(clone, []) if p.exists() or p.is_symlink()]
             if claimed:
@@ -998,16 +1132,13 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
                 continue
             if not any(clone in s.all_clones and s.path in g.kept_paths for s in g.sources):
                 _redirect(g, clone, path, data[SETTING])
-                if clone in g.redirected:
-                    redirected_now[clone] = (path, data[SETTING])
         # Memory a session created while the settings were being written was never planned.
-        for clone, (settings_path, value) in list(redirected_now.items()):
+        for clone in [c for c, state in g.redirects.items() if isinstance(state, RedirectedNow)]:
             appeared = [p for p in _unplanned(g, [clone], planned) if _has_files(p)]
             if appeared:
                 for p in appeared:
                     g.keep(p, "memory appeared while redirecting; re-run to merge it")
-                _unredirect(g, clone, settings_path, value)
-                del redirected_now[clone]
+                _undo(g, clone)
         # A clone reads a memory directory in each config directory, so all of them are checked
         # together just before any of its sources is renamed, and its redirect is undone at most once.
         units: dict[frozenset[Path], list[Source]] = {}
@@ -1028,10 +1159,9 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
                 g.keep(p, "memory appeared while redirecting; re-run to merge it")
             if changed or appeared:
                 for c in clones:
-                    if c in redirected_now:
-                        _unredirect(g, c, *redirected_now.pop(c))
+                    _undo(g, c)
             rest = [src for src in unit if src not in changed]
-            if any(clone in clones for clone, _ in g.stuck):
+            if any(isinstance(g.redirect(c), Stuck) for c in clones):
                 # Its setting must be removed by hand; it must then find all its memory in place.
                 for src in rest:
                     g.keep(src.path, "its clone's redirect could not be undone")
@@ -1043,6 +1173,13 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
                 continue
             for src in rest:
                 _archive(g, src, stamp)
+
+
+def _undo(g: GroupPlan, clone: Path) -> None:
+    """Undo *clone*'s redirect if this run made it; any other redirect stays."""
+    state = g.redirect(clone)
+    if isinstance(state, RedirectedNow):
+        _unredirect(g, clone, state.path, state.value)
 
 
 def _unplanned(g: GroupPlan, clones: Iterable[Path], planned: set[Path]) -> list[Path]:
