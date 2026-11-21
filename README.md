@@ -50,14 +50,15 @@ section in their system prompt.
   remote. Claude Code keeps memory per config directory, so it reads every one:
   the directory `$CLAUDE_CONFIG_DIR` names, `~/.claude`, and any other
   `~/.claude*` directory that holds `settings.json` or `.claude.json` (such as
-  `~/.claude2` for a second account), each once by real path. `--config-dir DIR`
-  (repeatable) adds one this misses, such as a directory only a wrapper's
-  `CLAUDE_CONFIG_DIR` names. The output lists them first. A backup copy of
-  `~/.claude` left in the home directory under such a name counts too, so move
-  it elsewhere before `--apply`. It merges each clone's
+  `~/.claude2` for a second account), each once by real path. The output lists
+  them first. `--config-dir DIR` adds one this misses, such as a directory only
+  a wrapper's `CLAUDE_CONFIG_DIR` names, and `--exclude-config-dir DIR` drops
+  one that is not Claude Code's, such as a backup copy of `~/.claude` or another
+  tool's `~/.claude-*` directory; both repeat. It merges each clone's
   `<config dir>/projects/<path>/memory` from all of them into
-  `~/.claude/repo-memory/<owner>/<repo>` (lowercased, as GitHub compares names),
-  sets `autoMemoryDirectory` in each clone's `.claude/settings.local.json` (only
+  `~/.claude/repo-memory/<owner>/<repo>` (lowercased, as GitHub compares names;
+  `--apply` creates `~/.claude` when only another config directory exists), sets
+  `autoMemoryDirectory` in each clone's `.claude/settings.local.json` (only
   where Git ignores that file), which sessions of every config directory read,
   and then renames each merged source to `memory.merged-<date>`. A source stays
   in place when a file in it differs from the shared copy, it holds a symlink,

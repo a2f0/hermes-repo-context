@@ -68,6 +68,14 @@ def setup(parser: argparse.ArgumentParser) -> None:
             "and ~/.claude* directories holding settings.json or .claude.json); repeatable"
         ),
     )
+    c.add_argument(
+        "--exclude-config-dir",
+        action="append",
+        default=[],
+        type=Path,
+        metavar="DIR",
+        help="do not read this directory, such as a backup of ~/.claude or another tool's; repeatable",
+    )
 
     parser.set_defaults(func=main)
 
@@ -135,11 +143,13 @@ def run_claude_memory(args: argparse.Namespace) -> int:
         return 1
     home = Path.home()
     extra = [Path(os.path.expanduser(d)) for d in args.config_dir]
-    for d in extra:
-        if not d.is_dir():
-            print(f"Invalid --config-dir {str(d)!r}; not a directory.")
-            return 2
-    config_dirs = claude_memory.claude_config_dirs(home, extra=extra)
+    exclude = [Path(os.path.expanduser(d)) for d in args.exclude_config_dir]
+    for option, dirs in (("--config-dir", extra), ("--exclude-config-dir", exclude)):
+        for d in dirs:
+            if not d.is_dir():
+                print(f"Invalid {option} {str(d)!r}; not a directory.")
+                return 2
+    config_dirs = claude_memory.claude_config_dirs(home, extra=extra, exclude=exclude)
     try:
         plans = claude_memory.plan(
             checkouts,

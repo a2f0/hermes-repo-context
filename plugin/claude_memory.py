@@ -44,12 +44,18 @@ CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR"
 CONFIG_MARKERS = ("settings.json", ".claude.json")
 
 
-def claude_config_dirs(home: Path, environ: Mapping[str, str] | None = None, extra: Iterable[Path] = ()) -> list[Path]:
+def claude_config_dirs(
+    home: Path,
+    environ: Mapping[str, str] | None = None,
+    extra: Iterable[Path] = (),
+    exclude: Iterable[Path] = (),
+) -> list[Path]:
     """Every Claude Code config directory, once each by real path: the one ``$CLAUDE_CONFIG_DIR``
     names (when set and non-empty), ``~/.claude`` (when it exists), then, by name, every other
     directory directly in *home* whose name starts with ``.claude`` and that holds one of
     ``CONFIG_MARKERS`` (a broken link counts, so its unreadable settings block the run as they
-    would in ``~/.claude``), then *extra*. A file such as ``~/.claude.json`` never counts."""
+    would in ``~/.claude``), then *extra*; none whose real path is one of *exclude*, such as a
+    backup copy of ``~/.claude``. A file such as ``~/.claude.json`` never counts."""
     env = os.environ if environ is None else environ
     candidates = []
     named = env.get(CONFIG_DIR_ENV)
@@ -68,7 +74,7 @@ def claude_config_dirs(home: Path, environ: Mapping[str, str] | None = None, ext
     ]
     candidates += [Path(os.path.abspath(p)) for p in extra]
     dirs: list[Path] = []
-    seen: set[str] = set()
+    seen: set[str] = {os.path.realpath(p) for p in exclude}
     for candidate in candidates:
         real = os.path.realpath(candidate)
         if real not in seen:
@@ -650,10 +656,16 @@ def plan(
     for config_dir in dirs:
         user_path = display(config_dir / "settings.json", home)
         user_value, user_ok = configured_memory(config_dir / "settings.json")
+        # Discovery can mistake another tool's ~/.claude-* directory for Claude Code's.
+        hint = (
+            ""
+            if config_dir == claude_home
+            else f" (not Claude Code's? pass --exclude-config-dir={display(config_dir, home)})"
+        )
         if user_value:
-            user_setting = f"{SETTING} is set in the user settings {user_path} ({user_value}); left alone"
+            user_setting = f"{SETTING} is set in the user settings {user_path} ({user_value}); left alone{hint}"
         elif not user_ok:
-            user_setting = f"the user settings {user_path} cannot be read; left alone"
+            user_setting = f"the user settings {user_path} cannot be read; left alone{hint}"
         if user_setting:
             break
     worktrees_of: dict[Path, list[Path]] = {}
