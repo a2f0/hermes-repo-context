@@ -41,6 +41,7 @@ SETTINGS_FILE = ".claude/settings.local.json"
 CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR"
 # Files that mark a home directory's other .claude* entries as Claude Code config directories:
 # Claude Code writes .claude.json in a directory it runs with, and dotfiles link settings.json in.
+# agent-tool discovers config directories by this same rule, so change the two together.
 CONFIG_MARKERS = ("settings.json", ".claude.json")
 
 
