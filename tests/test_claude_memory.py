@@ -1204,6 +1204,40 @@ def test_config_dirs_sharing_a_real_path_are_read_once(env: dict[str, Path]) -> 
     assert local_settings(env, "one")["autoMemoryDirectory"] == SHARED
 
 
+def test_project_dir_linked_across_config_dirs_is_read_once(env: dict[str, Path]) -> None:
+    second = config_dir(env["home"], ".claude2")
+    key = cm.path_key(str(env["one"]))
+    (second / "projects").mkdir()
+    (second / "projects" / key).symlink_to(source(env, "one").parent, target_is_directory=True)
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    assert [s.path for s in plans[0].sources] == [source(env, "one"), source(env, "two")]
+    cm.apply(plans, today="2026-10-29")
+    assert plans[0].kept == []
+    assert source(env, "one").with_name("memory.merged-2026-10-29").is_dir()
+
+
+def test_worktrees_share_memory_in_every_config_dir(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    main, linked = make_worktree_clone(home / "github" / "wt", URL, home / "github" / "wt-feature")
+    second = config_dir(home, ".claude2")
+    key = cm.path_key(str(main))
+    first = memory_in(claude, key, {"a.md": "a"})
+    other = memory_in(second, key, {"b.md": "b"})
+    found: dict[str, ident.CheckoutInfo] = {
+        str(main): {"url": URL, "identity": "a2f0/demo"},
+        str(linked): {"url": URL, "identity": "a2f0/demo"},
+    }
+    plans = cm.plan(found, claude_home=claude, home=home)
+    # One source per config directory, each carrying both worktrees: archived as one unit.
+    assert [(s.path, s.all_clones) for s in plans[0].sources] == [(first, [main, linked]), (other, [main, linked])]
+    cm.apply(plans, today="2026-10-29")
+    assert plans[0].kept == []
+    assert not first.exists() and not other.exists()
+    for clone in (main, linked):
+        assert json.loads((clone / ".claude" / "settings.local.json").read_text())["autoMemoryDirectory"] == SHARED
+
+
 def test_memory_setting_in_another_config_dirs_user_settings_is_respected(env: dict[str, Path]) -> None:
     second = config_dir(env["home"], ".claude2", json.dumps({"autoMemoryDirectory": "~/mine"}))
     plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
@@ -1560,6 +1594,6 @@ def test_apply_refuses_when_sessions_cannot_be_read(
     assert source(env, "one").is_dir() and source(env, "two").is_dir()
 
 
-@pytest.mark.skipif(shutil.which("ps") is None, reason="needs ps")
+@pytest.mark.skipif(not os.environ.get("CI"), reason="checks the real ps flags on CI's platform only")
 def test_claude_pids_runs_on_this_platform() -> None:
     assert cm.claude_pids() is not None

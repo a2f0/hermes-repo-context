@@ -637,14 +637,18 @@ def plan(
     holds the shared store, ``repo-memory``; the sources come from *config_dirs*, which
     defaults to ``claude_config_dirs(home)``."""
     dirs = claude_config_dirs(home) if config_dirs is None else list(config_dirs)
-    # Two config directories can share one projects directory through a symlink; read it once.
-    projects_dirs: list[Path] = []
-    seen_projects: set[str] = set()
-    for config_dir in dirs:
-        real = os.path.realpath(config_dir / "projects")
-        if real not in seen_projects:
-            seen_projects.add(real)
-            projects_dirs.append(config_dir / "projects")
+
+    def memory_dirs(key: str) -> list[Path]:
+        """*key*'s memory directory in each config directory. Two config directories can share
+        ``projects/`` or ``projects/<key>`` through a symlink; such a directory is read once."""
+        found, seen = [], set()
+        for config_dir in dirs:
+            real = os.path.realpath(config_dir / "projects" / key)
+            if real not in seen:
+                seen.add(real)
+                found.append(config_dir / "projects" / key / "memory")
+        return found
+
     canonical_root = claude_home / "repo-memory"
     # A user-level setting moves every project's memory out of projects/; leave that to the user.
     user_setting = ""
@@ -699,21 +703,21 @@ def plan(
             owned_keys.add(key)
         claimed = key in alias_keys and not owned
         if claimed:
-            for projects in projects_dirs:
-                watchers = claimants.setdefault(projects / key / "memory", [])
+            for memory in memory_dirs(key):
+                watchers = claimants.setdefault(memory, [])
                 for tree in [Path(path), *worktrees(Path(path))]:
                     if tree not in watchers:
                         watchers.append(tree)
         reused = bool(info.get("reused")) and not claimed and not owned
         entries += [
-            (info["identity"], Source(projects / key / "memory", Path(path)), info.get("url"), reused, claimed)
-            for projects in projects_dirs
+            (info["identity"], Source(memory, Path(path)), info.get("url"), reused, claimed)
+            for memory in memory_dirs(key)
         ]
     entries += [
-        (identity, Source(projects / key / "memory", None), None, False, False)
+        (identity, Source(memory, None), None, False, False)
         for key, identity in (aliases or {}).items()
         if key not in owned_keys
-        for projects in projects_dirs
+        for memory in memory_dirs(key)
     ]
     # Worktrees of one repository share its memory directory (Claude Code keys it by the main
     # checkout): one source carries them all, and each worktree's settings are redirected.
