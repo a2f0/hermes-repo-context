@@ -1089,9 +1089,15 @@ def test_claude_config_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     found = [home / ".claude", home / ".claude-work", home / ".claude2"]
     assert cm.claude_config_dirs(home, {}) == found
     assert cm.claude_config_dirs(home, {"CLAUDE_CONFIG_DIR": ""}) == found
-    # The directory the variable names comes first, whether or not it exists or is marked yet.
+    # The directory the variable names comes first, marked or not, when it is an absolute path
+    # to a directory that exists (as agent-tool 0.1.67 finds them).
     elsewhere = tmp_path / "elsewhere"
+    assert cm.claude_config_dirs(home, {"CLAUDE_CONFIG_DIR": str(elsewhere)}) == found
+    elsewhere.mkdir()
     assert cm.claude_config_dirs(home, {"CLAUDE_CONFIG_DIR": str(elsewhere)}) == [elsewhere, *found]
+    unnormal = f"{tmp_path}/home/../elsewhere/"
+    assert cm.claude_config_dirs(home, {"CLAUDE_CONFIG_DIR": unnormal}) == [elsewhere, *found]
+    assert cm.claude_config_dirs(home, {"CLAUDE_CONFIG_DIR": "elsewhere"}) == found  # relative
     renamed = [home / ".claude2", home / ".claude", home / ".claude-work"]
     assert cm.claude_config_dirs(home, {"CLAUDE_CONFIG_DIR": str(home / ".claude2-link")}) == [
         home / ".claude2-link",
@@ -1112,10 +1118,14 @@ def test_claude_config_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     assert cm.claude_config_dirs(tmp_path / "missing", {}) == []
 
 
-def test_broken_settings_link_marks_a_config_dir_that_blocks(env: dict[str, Path], tmp_path: Path) -> None:
+def test_broken_settings_link_does_not_mark_a_config_dir(env: dict[str, Path], tmp_path: Path) -> None:
     second = env["home"] / ".claude2"
     second.mkdir()
     (second / "settings.json").symlink_to(tmp_path / "dotfiles-not-checked-out.json")
+    # Markers are followed, as agent-tool 0.1.67 follows them; .claude.json still marks it.
+    assert cm.claude_config_dirs(env["home"], {}) == [env["claude"]]
+    assert not cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])[0].blocked
+    (second / ".claude.json").write_text("{}")
     assert cm.claude_config_dirs(env["home"], {}) == [env["claude"], second]
     plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
     assert plans[0].blocked == "the user settings ~/.claude2/settings.json cannot be read; left alone"
@@ -1125,6 +1135,7 @@ def test_extra_config_dirs_come_last_once_each(tmp_path: Path) -> None:
     home = tmp_path / "home"
     config_dir(home, ".claude")
     outside = tmp_path / "xdg" / "claude2"
+    outside.mkdir(parents=True)
     assert cm.claude_config_dirs(home, {}, extra=[outside, home / ".claude", outside]) == [home / ".claude", outside]
 
 

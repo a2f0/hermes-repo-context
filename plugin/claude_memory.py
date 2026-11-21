@@ -41,38 +41,37 @@ SETTINGS_FILE = ".claude/settings.local.json"
 CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR"
 # Files that mark a home directory's other .claude* entries as Claude Code config directories:
 # Claude Code writes .claude.json in a directory it runs with, and dotfiles link settings.json in.
-# agent-tool discovers config directories by this same rule, so change the two together.
+# agent-tool 0.1.67 (claudeConfigDirectories) discovers config directories by this same rule, so
+# change the two together.
 CONFIG_MARKERS = ("settings.json", ".claude.json")
 
 
 def claude_config_dirs(home: Path, environ: Mapping[str, str] | None = None, extra: Iterable[Path] = ()) -> list[Path]:
-    """Every Claude Code config directory, once each by real path: the one ``$CLAUDE_CONFIG_DIR``
-    names (when set and non-empty), ``~/.claude`` (when it exists), then, by name, every other
-    directory directly in *home* whose name starts with ``.claude`` and that holds one of
-    ``CONFIG_MARKERS`` (a broken link counts, so its unreadable settings block the run as they
-    would in ``~/.claude``), then *extra*. A file such as ``~/.claude.json`` never counts."""
+    """Every Claude Code config directory, as agent-tool 0.1.67 finds them: the one
+    ``$CLAUDE_CONFIG_DIR`` names when it is an absolute path, ``~/.claude``, then, by name, every
+    other entry directly in *home* whose name starts with ``.claude`` and that holds one of
+    ``CONFIG_MARKERS`` (following links, so a broken link does not count), then *extra*. Only
+    existing directories count, so a file such as ``~/.claude.json`` never does, and each counts
+    once, by real path."""
     env = os.environ if environ is None else environ
     candidates = []
     named = env.get(CONFIG_DIR_ENV)
-    if named:
-        candidates.append(Path(os.path.abspath(named)))
-    default = home / ".claude"
-    if os.path.isdir(default):
-        candidates.append(default)
+    # Only an absolute path: a relative one depends on where Claude Code started, unknown here.
+    if named and os.path.isabs(named):
+        candidates.append(Path(os.path.normpath(named)))
+    candidates.append(home / ".claude")
     try:
-        others = sorted(p for p in home.iterdir() if p.name.startswith(".claude") and p.name != default.name)
+        others = sorted(p for p in home.iterdir() if p.name.startswith(".claude") and p.name != ".claude")
     except OSError:
         others = []
     # os.path, not Path: it answers False rather than raising for a directory it cannot read.
-    candidates += [
-        p for p in others if os.path.isdir(p) and any(os.path.lexists(p / marker) for marker in CONFIG_MARKERS)
-    ]
+    candidates += [p for p in others if any(os.path.exists(p / marker) for marker in CONFIG_MARKERS)]
     candidates += [Path(os.path.abspath(p)) for p in extra]
     dirs: list[Path] = []
     seen: set[str] = set()
     for candidate in candidates:
         real = os.path.realpath(candidate)
-        if real not in seen:
+        if os.path.isdir(candidate) and real not in seen:
             seen.add(real)
             dirs.append(candidate)
     return dirs
