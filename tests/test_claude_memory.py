@@ -1269,6 +1269,19 @@ def test_memory_setting_in_another_config_dirs_user_settings_is_respected(env: d
     assert plans[0].blocked == "the user settings ~/.claude2/settings.json cannot be read; left alone"
 
 
+def test_unreadable_config_dir_settings_block(
+    env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    locked = config_dir(tmp_path, "locked-config")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(locked))
+    locked.chmod(0o000)  # Path.exists() calls its settings.json absent
+    try:
+        plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    finally:
+        locked.chmod(0o700)
+    assert plans[0].blocked == f"the user settings {locked / 'settings.json'} cannot be read; left alone"
+
+
 def test_alias_finds_its_memory_in_every_config_dir(env: dict[str, Path]) -> None:
     second = config_dir(env["home"], ".claude2")
     first = env["claude"] / "projects" / "-old-stealth" / "memory"
@@ -1588,14 +1601,15 @@ def test_live_claude_dirs_finds_sessions_by_the_name_they_started_as(
         f"   14 {me:5} Ss -zsh\n   15 {me:5} S node\n   16 {other:5} S+ claude\n"
         f"   17 {me:5} T /Applications/My Tools/claude\n   18 {me:5} Z claude\n   19 {me:5} S claude2\n"
         # Without argv (from inside a sandbox, say), ps shows the kernel's name in parentheses.
-        f"   20 {me:5} S (2.1.325)\n   21 {me:5} S (id)\n   22 {me:5} S (2.1.325-beta)\n"
+        f"   20 {me:5} S (2.1.325)\n   21 {me:5} S (id)\n   22 {me:5} S (2.1.325-beta.1)\n"
+        f"   23 {me:5} S (claude)\n"
     )
-    lsof = f"p12\nfcwd\nn{a}\np13\nfcwd\nn{b}\np17\nfcwd\nn{b}\np19\nfcwd\nn{a}\np20\nfcwd\nn{a}\n"
+    lsof = "".join(f"p{pid}\nfcwd\nn{a}\n" for pid in (12, 17, 19, 20, 22, 23)) + f"p13\nfcwd\nn{b}\n"
     calls = _fake_processes(monkeypatch, ps, lsof)
     assert cm.live_claude_dirs() == {a.resolve(), b.resolve()}
     assert calls == [
         ["ps", "-A", "-ww", "-o", "pid=", "-o", "uid=", "-o", "stat=", "-o", "comm="],
-        ["lsof", "-a", "-d", "cwd", "-p", "12,13,17,19,20", "-Fpn"],
+        ["lsof", "-a", "-d", "cwd", "-p", "12,13,17,19,20,22,23", "-Fpn"],
     ]
 
 

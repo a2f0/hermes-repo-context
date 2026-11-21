@@ -517,12 +517,17 @@ def read_settings(path: Path) -> tuple[dict[str, Any] | None, str]:
 
 def configured_memory(path: Path) -> tuple[str | None, bool]:
     """``(autoMemoryDirectory or None, readable)`` from a settings file this tool never writes.
-    It is only read, so a symlink (a dotfiles checkout, say) is followed; unreadable is False."""
-    if not path.exists():
-        return None, not path.is_symlink()  # a dangling link is unreadable
+    It is only read, so a symlink (a dotfiles checkout, say) is followed; unreadable is False,
+    including a file in a directory this user cannot read, which ``Path.exists`` calls absent."""
     try:
-        data = json.loads(path.read_text() or "{}")
-    except (OSError, ValueError):
+        text = path.read_text()
+    except (FileNotFoundError, NotADirectoryError):
+        return None, not os.path.islink(path)  # absent; a dangling link is unreadable
+    except OSError:
+        return None, False
+    try:
+        data = json.loads(text or "{}")
+    except ValueError:
         return None, False
     if not isinstance(data, dict):
         return None, False
@@ -1027,7 +1032,7 @@ def claude_pids() -> set[int] | None:
     return pids
 
 
-_VERSION_RE = re.compile(r"\d+(\.\d+)+")
+_VERSION_RE = re.compile(r"\d+(\.\d+)+([-+][\w.]+)?")  # 2.1.325, 2.1.325-beta.1
 
 
 def _claude_name(name: str) -> bool:
