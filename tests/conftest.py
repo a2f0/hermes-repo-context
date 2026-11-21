@@ -39,6 +39,8 @@ def hermes_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HOME", str(user))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(user / ".config"))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    # A claude2-style session sets this; claude-memory would read that config directory.
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     return home
 
 

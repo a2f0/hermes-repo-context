@@ -1,15 +1,18 @@
 """Share Claude Code auto memory per Git remote instead of per checkout path.
 
-Claude Code keeps auto memory at ``~/.claude/projects/<path-key>/memory``, so each
-clone of a repository learns separately. ``plan`` and ``apply`` fold each clone's
-memory directory into ``~/.claude/repo-memory/<owner>/<repo>`` (files copied by
-relative path, ``MEMORY.md`` index lines appended when new), set
+Claude Code keeps auto memory at ``<config dir>/projects/<path-key>/memory``, so each
+clone of a repository learns separately, and so does each Claude Code config directory
+(``claude_config_dirs``): the one ``$CLAUDE_CONFIG_DIR`` names, ``~/.claude``, and any
+other ``~/.claude*`` directory holding ``settings.json`` or ``.claude.json``, such as a
+second account's ``~/.claude2``. ``plan`` and ``apply`` fold each clone's memory
+directory from every config directory into ``~/.claude/repo-memory/<owner>/<repo>``
+(files copied by relative path, ``MEMORY.md`` index lines appended when new), set
 ``autoMemoryDirectory`` in each clone's gitignored ``.claude/settings.local.json``,
-and only then rename the merged source to ``memory.merged-<date>``. A source that
-cannot be merged completely stays in place and its clone is not redirected, so
-Claude Code keeps seeing it. Nothing is written through a symlink inside the
-shared directory. A symlinked memory directory does not work for Claude Code
-either: it resolves the real path and denies the write.
+which sessions of every config directory read, and only then rename each merged
+source to ``memory.merged-<date>``. A source that cannot be merged completely stays
+in place and its clone is not redirected, so Claude Code keeps seeing it. Nothing is
+written through a symlink inside the shared directory. A symlinked memory directory
+does not work for Claude Code either: it resolves the real path and denies the write.
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ import subprocess
 import tempfile
 import urllib.parse
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path, PurePosixPath
@@ -35,6 +38,41 @@ INDEX = "MEMORY.md"
 INDEX_MAX_LINES, INDEX_MAX_BYTES = 200, 25_000
 SETTING = "autoMemoryDirectory"
 SETTINGS_FILE = ".claude/settings.local.json"
+CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR"
+# Files that mark a home directory's other .claude* entries as Claude Code config directories:
+# Claude Code writes .claude.json in a directory it runs with, and dotfiles link settings.json in.
+CONFIG_MARKERS = ("settings.json", ".claude.json")
+
+
+def claude_config_dirs(home: Path, environ: Mapping[str, str] | None = None) -> list[Path]:
+    """Every Claude Code config directory, once each by real path: the one ``$CLAUDE_CONFIG_DIR``
+    names (when set and non-empty), ``~/.claude`` (when it exists), then, by name, every other
+    directory directly in *home* whose name starts with ``.claude`` and that holds one of
+    ``CONFIG_MARKERS``. A file such as ``~/.claude.json`` is not a directory and never counts."""
+    env = os.environ if environ is None else environ
+    candidates = []
+    named = env.get(CONFIG_DIR_ENV)
+    if named:
+        candidates.append(Path(os.path.abspath(named)))
+    default = home / ".claude"
+    if os.path.isdir(default):
+        candidates.append(default)
+    try:
+        others = sorted(p for p in home.iterdir() if p.name.startswith(".claude") and p.name != default.name)
+    except OSError:
+        others = []
+    # os.path, not Path: it answers False rather than raising for a directory it cannot read.
+    candidates += [
+        p for p in others if os.path.isdir(p) and any(os.path.exists(p / marker) for marker in CONFIG_MARKERS)
+    ]
+    dirs: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        real = os.path.realpath(candidate)
+        if real not in seen:
+            seen.add(real)
+            dirs.append(candidate)
+    return dirs
 
 
 def is_ignored(clone: Path, relative: str) -> bool:
@@ -272,11 +310,13 @@ class GroupPlan:
     copies: list[tuple[Path, Path, PurePosixPath]] = field(default_factory=list)  # (source dir, file, rel)
     providers: dict[PurePosixPath, list[Path]] = field(default_factory=dict)  # rel -> sources holding it
     digests: dict[PurePosixPath, str] = field(default_factory=dict)  # rel -> planned content hash
-    clone_sources: dict[Path, Path] = field(default_factory=dict)  # clone -> its memory directory
+    # clone -> its memory directory in each config directory
+    clone_sources: dict[Path, list[Path]] = field(default_factory=dict)
     target: str = ""  # the autoMemoryDirectory value that points at dest
     clones: list[Path] = field(default_factory=list)  # every clone of this repository
     watch: set[Path] = field(default_factory=set)  # other clones whose memory directory is a source
-    claims: dict[Path, Path] = field(default_factory=dict)  # clone -> its memory dir an alias claims
+    # clone -> its memory directories (one per config directory) that an alias claims
+    claims: dict[Path, list[Path]] = field(default_factory=dict)
     failures: list[tuple[Path, str]] = field(default_factory=list)  # clones apply could not redirect
     # Clones apply redirected but could not point back at memory that stayed in place.
     stuck: list[tuple[Path, str]] = field(default_factory=list)
@@ -451,32 +491,61 @@ def plan(
     *,
     claude_home: Path,
     home: Path,
+    config_dirs: Sequence[Path] | None = None,
     aliases: dict[str, str] | None = None,
     only: Iterable[str] = (),
 ) -> list[GroupPlan]:
-    projects = claude_home / "projects"
+    """Plan the merge into ``claude_home/repo-memory`` of the memory each clone (and each
+    ``--alias`` project key) holds under ``projects/`` in every Claude Code config directory;
+    *config_dirs* defaults to ``claude_config_dirs(home)``."""
+    dirs = claude_config_dirs(home) if config_dirs is None else list(config_dirs)
+    # Two config directories can share one projects directory through a symlink; read it once.
+    projects_dirs: list[Path] = []
+    seen_projects: set[str] = set()
+    for config_dir in dirs:
+        real = os.path.realpath(config_dir / "projects")
+        if real not in seen_projects:
+            seen_projects.add(real)
+            projects_dirs.append(config_dir / "projects")
     canonical_root = claude_home / "repo-memory"
     # A user-level setting moves every project's memory out of projects/; leave that to the user.
-    user_value, user_ok = configured_memory(claude_home / "settings.json")
-    user_setting = (
-        f"{SETTING} is set in the user settings ({user_value}); left alone"
-        if user_value
-        else ""
-        if user_ok
-        else "the user settings cannot be read; left alone"
-    )
+    user_setting = ""
+    for config_dir in dirs:
+        user_path = display(config_dir / "settings.json", home)
+        user_value, user_ok = configured_memory(config_dir / "settings.json")
+        if user_value:
+            user_setting = f"{SETTING} is set in the user settings {user_path} ({user_value}); left alone"
+        elif not user_ok:
+            user_setting = f"the user settings {user_path} cannot be read; left alone"
+        if user_setting:
+            break
+    worktrees_of: dict[Path, list[Path]] = {}
+
+    def worktrees(clone: Path) -> list[Path]:
+        if clone not in worktrees_of:
+            worktrees_of[clone] = registered_worktrees(clone)
+        return worktrees_of[clone]
+
+    remotes: dict[Path, str | None] = {}
+
+    def remote(clone: Path) -> str | None:
+        if clone not in remotes:
+            remotes[clone] = remote_url(clone)
+        return remotes[clone]
+
     # Group by destination, not by spelling: Owner/Repo and owner/repo share one directory.
     names: dict[PurePosixPath, str] = {}
     clones: dict[PurePosixPath, list[Path]] = {}
     sources: dict[PurePosixPath, list[Source]] = {}
     stale: dict[PurePosixPath, list[tuple[Path, str]]] = {}
-    claims: dict[PurePosixPath, dict[Path, Path]] = {}
+    claims: dict[PurePosixPath, dict[Path, list[Path]]] = {}
     # Live clones first, so their index lines lead the merged MEMORY.md; then aliases. An alias
     # names the owner of a memory directory explicitly, so it claims that directory from any
-    # checkout that maps to it; the checkout itself can still be redirected.
+    # checkout that maps to it; the checkout itself can still be redirected. A clone or alias
+    # has one memory directory in each config directory, each a separate source.
     for key in aliases or {}:
         if not _PROJECT_KEY_RE.match(key):
-            raise ValueError(f"invalid project key {key!r}; expected a name from ~/.claude/projects")
+            raise ValueError(f"invalid project key {key!r}; expected a name from a Claude Code projects directory")
     alias_keys = set(aliases or {})
     claimants: dict[Path, list[Path]] = {}  # aliased memory directory -> clones that map to it
     # (identity, memory source, cached remote URL or None for an alias, reused, claimed)
@@ -492,18 +561,21 @@ def plan(
             owned_keys.add(key)
         claimed = key in alias_keys and not owned
         if claimed:
-            watchers = claimants.setdefault(projects / key / "memory", [])
-            for tree in [Path(path), *registered_worktrees(Path(path))]:
-                if tree not in watchers:
-                    watchers.append(tree)
+            for projects in projects_dirs:
+                watchers = claimants.setdefault(projects / key / "memory", [])
+                for tree in [Path(path), *worktrees(Path(path))]:
+                    if tree not in watchers:
+                        watchers.append(tree)
         reused = bool(info.get("reused")) and not claimed and not owned
-        entries.append(
+        entries += [
             (info["identity"], Source(projects / key / "memory", Path(path)), info.get("url"), reused, claimed)
-        )
+            for projects in projects_dirs
+        ]
     entries += [
         (identity, Source(projects / key / "memory", None), None, False, False)
         for key, identity in (aliases or {}).items()
         if key not in owned_keys
+        for projects in projects_dirs
     ]
     # Worktrees of one repository share its memory directory (Claude Code keys it by the main
     # checkout): one source carries them all, and each worktree's settings are redirected.
@@ -523,7 +595,7 @@ def plan(
     for src in primary.values():
         if src.clone is None:
             continue
-        for tree in registered_worktrees(src.clone):
+        for tree in worktrees(src.clone):
             if tree not in src.all_clones:
                 src.worktrees.append(tree)
     # Claude Code's project key folds every non-alphanumeric character to "-", so foo-bar and
@@ -541,15 +613,17 @@ def plan(
         sources.setdefault(sub, [])
         # The cache can be older than the checkout: a path reused for another repository must
         # not pour its memory into the cached one.
-        if src.clone is not None and (not url or remote_url(src.clone) != url):
+        if src.clone is not None and (not url or remote(src.clone) != url):
             stale.setdefault(sub, []).append((src.path, "its clone's remote no longer matches the cache; re-run sync"))
             continue
         if claimed and src.clone is not None:
             # The checkout and every worktree of it read the claimed directory today.
-            for tree in [src.clone, *registered_worktrees(src.clone)]:
+            for tree in [src.clone, *worktrees(src.clone)]:
                 if tree not in clones[sub]:
                     clones[sub].append(tree)
-                claims.setdefault(sub, {})[tree] = src.path
+                claimed_dirs = claims.setdefault(sub, {}).setdefault(tree, [])
+                if src.path not in claimed_dirs:
+                    claimed_dirs.append(src.path)
             continue
         if users[src.path] > 1:
             stale.setdefault(sub, []).append(
@@ -562,7 +636,9 @@ def plan(
             )
             continue
         sources[sub].append(src)
-        clones[sub].extend(src.all_clones)
+        for clone in src.all_clones:
+            if clone not in clones[sub]:
+                clones[sub].append(clone)
     wanted = set()
     for o in only:
         sub = memory_subpath(o)
@@ -579,13 +655,17 @@ def plan(
         g.sources = [s for s in sources[sub] if _is_mergeable(s.path, dest)]
         for s in g.sources:
             s.fingerprint = fingerprint(s.path)
-        g.clone_sources = {c: s.path for s in sources[sub] for c in s.all_clones}
+        for s in sources[sub]:
+            for c in s.all_clones:
+                g.clone_sources.setdefault(c, []).append(s.path)
         g.target = display(dest, home)
         g.clones = list(clones[sub])
         g.watch = {c for s in sources[sub] for c in claimants.get(s.path, [])}
-        g.claims = dict(claims.get(sub, {}))
+        g.claims = {clone: list(paths) for clone, paths in claims.get(sub, {}).items()}
         for stale_path, reason in stale.get(sub, []):
-            g.keep(stale_path, reason)
+            # Only memory that exists stays in place; most clones have none in some config directory.
+            if stale_path.exists() or stale_path.is_symlink():
+                g.keep(stale_path, reason)
         # A clone whose memory directory is a symlink is not merged, so it must not be redirected.
         unclean = set()
         for s in sources[sub]:
@@ -768,21 +848,72 @@ def _unredirect(g: GroupPlan, clone: Path, path: Path, target: str) -> None:
     g.stuck.append((clone, reason))
 
 
-def live_claude_dirs() -> set[Path] | None:
-    """Working directories of running Claude Code processes, or None when lsof cannot tell."""
+def claude_pids() -> set[int] | None:
+    """Running Claude Code processes, or None when ``ps`` fails: those started as ``claude``
+    (argv[0], or on Linux the process name, starts with it). A ``claude2`` shell function runs
+    ``claude`` too. The kernel's own name for a native install is its versioned binary
+    (``2.1.325``), so ``lsof -c claude`` alone finds none of those sessions on macOS."""
     try:
         out = subprocess.run(
-            ["lsof", "-a", "-d", "cwd", "-c", "claude", "-Fn"],
+            ["ps", "-A", "-o", "pid=", "-o", "comm="],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=30,
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    if out.returncode not in (0, 1):  # 1: no such process
+    if out.returncode != 0:
         return None
-    return {Path(line[1:]).resolve() for line in out.stdout.splitlines() if line.startswith("n")}
+    pids: set[int] = set()
+    for line in out.stdout.splitlines():
+        pid, _, command = line.strip().partition(" ")
+        if pid.isdigit() and command.strip().rsplit("/", 1)[-1].startswith("claude"):
+            pids.add(int(pid))
+    return pids
+
+
+def live_claude_dirs() -> set[Path] | None:
+    """Working directories of running Claude Code processes, or None when they cannot all be
+    read: ``ps`` or ``lsof`` failed, or lsof cannot see a session that still runs (another
+    user's, or from inside a sandbox)."""
+    pids = claude_pids()
+    if pids is None:
+        return None
+    if not pids:
+        return set()
+    try:
+        out = subprocess.run(
+            ["lsof", "-a", "-d", "cwd", "-p", ",".join(map(str, sorted(pids))), "-Fpn"],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode not in (0, 1):  # 1: a listed process was not found
+        return None
+    dirs: set[Path] = set()
+    seen: set[int] = set()
+    pid: int | None = None
+    for line in out.stdout.splitlines():
+        if line.startswith("p") and line[1:].isdigit():
+            pid = int(line[1:])
+        elif line.startswith("n") and pid is not None:
+            seen.add(pid)
+            dirs.add(Path(line[1:]).resolve())
+    for missing in pids - seen:
+        try:
+            os.kill(missing, 0)
+        except ProcessLookupError:
+            continue  # it exited after ps listed it
+        except OSError:
+            pass  # it runs as another user
+        return None
+    return dirs
 
 
 def busy_clones(plans: list[GroupPlan], live: set[Path]) -> list[Path]:
@@ -830,7 +961,8 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
     for g in sorted(plans, key=lambda g: not g.watch):
         if g.blocked or _dest_problem(g.root, g.dest):
             continue
-        _private_dirs(g.root.parent, g.dest)
+        # From the home directory: ~/.claude itself is missing when only another config dir is used.
+        _private_dirs(g.root.parent.parent, g.dest)
         for src_dir, f, rel in g.copies:
             _copy(g, src_dir, f, rel)
         _write_index(g)
@@ -844,14 +976,16 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
         planned = {s.path for s in g.sources}
         redirected_now: dict[Path, tuple[Path, str]] = {}
         for clone, path, data in g.settings_changes:
-            claimed = g.claims.get(clone)
-            if claimed is not None and (claimed.exists() or claimed.is_symlink()):
+            claimed = [p for p in g.claims.get(clone, []) if p.exists() or p.is_symlink()]
+            if claimed:
                 # Its old memory belongs to an alias that has not merged it; keep reading it.
-                g.keep(claimed, "its alias has not merged it yet; re-run")
+                for p in claimed:
+                    g.keep(p, "its alias has not merged it yet; re-run")
                 continue
-            own = g.clone_sources.get(clone)
-            if own is not None and own not in planned and _has_files(own):
-                g.keep(own, "memory appeared since planning; re-run to merge it")
+            appeared = [p for p in g.clone_sources.get(clone, []) if p not in planned and _has_files(p)]
+            if appeared:
+                for p in appeared:
+                    g.keep(p, "memory appeared since planning; re-run to merge it")
                 continue
             if not any(clone in s.all_clones and s.path in g.kept_paths for s in g.sources):
                 _redirect(g, clone, path, data[SETTING])
@@ -859,11 +993,20 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
                     redirected_now[clone] = (path, data[SETTING])
         # Memory a session created while the settings were being written was never planned.
         for clone, (settings_path, value) in list(redirected_now.items()):
-            own = g.clone_sources.get(clone)
-            if own is not None and own not in planned and _has_files(own):
-                g.keep(own, "memory appeared while redirecting; re-run to merge it")
+            appeared = [p for p in g.clone_sources.get(clone, []) if p not in planned and _has_files(p)]
+            if appeared:
+                for p in appeared:
+                    g.keep(p, "memory appeared while redirecting; re-run to merge it")
                 _unredirect(g, clone, settings_path, value)
                 del redirected_now[clone]
+        # A clone reads a memory directory in each config directory. Find every source that changed
+        # before archiving any, so undoing a clone's redirect never leaves a sibling archived.
+        for src in g.archivable():
+            if src.changed():
+                g.keep(src.path, "changed since planning; re-run to merge it")
+                for c in src.all_clones:
+                    if c in redirected_now:
+                        _unredirect(g, c, *redirected_now[c])
         for src in g.archivable():
             if any((read_settings(c / SETTINGS_FILE)[0] or {}).get(SETTING) != g.target for c in src.all_clones):
                 g.keep(src.path, "its clone no longer reads the shared directory")

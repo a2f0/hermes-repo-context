@@ -749,7 +749,7 @@ def test_symlinked_user_settings_are_read(env: dict[str, Path], tmp_path: Path) 
     assert plans[0].blocked.startswith("autoMemoryDirectory is set in the user settings")
     dotfiles.write_text("{not json")
     plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
-    assert plans[0].blocked == "the user settings cannot be read; left alone"
+    assert plans[0].blocked == "the user settings ~/.claude/settings.json cannot be read; left alone"
     dotfiles.write_text(json.dumps({"theme": "dark"}))
     assert not cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])[0].blocked
 
@@ -1047,3 +1047,294 @@ def test_unreadable_settings_at_apply_time_keep_the_source(env: dict[str, Path])
     assert (source(env, "one") / "a.md").is_file()
     assert "autoMemoryDirectory" not in json.loads(path.read_text())
     assert not source(env, "two").exists()
+
+
+def config_dir(home: Path, name: str, settings: str = "{}") -> Path:
+    """A Claude Code config directory in *home*, marked as dotfiles mark one: with settings.json."""
+    d = home / name
+    d.mkdir(parents=True)
+    (d / "settings.json").write_text(settings)
+    return d
+
+
+def memory_in(config: Path, key: str, files: dict[str, str]) -> Path:
+    d = config / "projects" / key / "memory"
+    for name, text in files.items():
+        (d / name).parent.mkdir(parents=True, exist_ok=True)
+        (d / name).write_text(text)
+    return d
+
+
+def local_settings(env: dict[str, Path], clone: str) -> dict[str, Any]:
+    return cm.read_settings(env[clone] / ".claude" / "settings.local.json")[0] or {}
+
+
+def test_claude_config_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    config_dir(home, ".claude")
+    dotfiles = tmp_path / "dotfiles-settings.json"
+    dotfiles.write_text("{}")
+    (home / ".claude2").mkdir()
+    (home / ".claude2" / "settings.json").symlink_to(dotfiles)  # linked in by dotfiles
+    (home / ".claude-work").mkdir()
+    (home / ".claude-work" / ".claude.json").write_text("{}")  # written by Claude Code
+    (home / ".claude-cache" / "projects").mkdir(parents=True)  # no marker
+    (home / ".claude.json").write_text("{}")  # a file, never a config directory
+    (home / ".claude-default").symlink_to(home / ".claude", target_is_directory=True)  # ~/.claude again
+    (home / ".claude2-link").symlink_to(home / ".claude2", target_is_directory=True)  # ~/.claude2 again
+    config_dir(home, ".config")
+    found = [home / ".claude", home / ".claude-work", home / ".claude2"]
+    assert cm.claude_config_dirs(home, {}) == found
+    assert cm.claude_config_dirs(home, {"CLAUDE_CONFIG_DIR": ""}) == found
+    # The directory the variable names comes first, whether or not it exists or is marked yet.
+    elsewhere = tmp_path / "elsewhere"
+    assert cm.claude_config_dirs(home, {"CLAUDE_CONFIG_DIR": str(elsewhere)}) == [elsewhere, *found]
+    renamed = [home / ".claude2", home / ".claude", home / ".claude-work"]
+    assert cm.claude_config_dirs(home, {"CLAUDE_CONFIG_DIR": str(home / ".claude2-link")}) == [
+        home / ".claude2-link",
+        home / ".claude",
+        home / ".claude-work",
+    ]
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home / ".claude2"))
+    assert cm.claude_config_dirs(home) == renamed
+    # Without ~/.claude, a marked directory still counts; a missing home holds none, and an
+    # unreadable directory is skipped rather than failing the run.
+    other = tmp_path / "other"
+    config_dir(other, ".claude2")
+    (other / ".claude-locked").mkdir(mode=0o000)
+    try:
+        assert cm.claude_config_dirs(other, {}) == [other / ".claude2"]
+    finally:
+        (other / ".claude-locked").chmod(0o700)
+    assert cm.claude_config_dirs(tmp_path / "missing", {}) == []
+
+
+def test_memory_in_every_config_dir_is_merged(env: dict[str, Path]) -> None:
+    second = config_dir(env["home"], ".claude2")
+    other = memory_in(
+        second,
+        cm.path_key(str(env["one"])),
+        {"MEMORY.md": "# Memory Index\n- [D](d.md) — d\n", "d.md": "d", "a.md": "a"},
+    )
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    g = plans[0]
+    assert [s.path for s in g.sources] == [source(env, "one"), other, source(env, "two")]
+    assert g.dest == env["claude"] / "repo-memory" / "a2f0" / "demo"
+    assert len(g.settings_changes) == 2  # one redirect per clone, whatever its config directories
+    cm.apply(plans, today="2026-10-29")
+    assert g.kept == []
+    assert (g.dest / "d.md").read_text() == "d"
+    assert "- [D](d.md) — d" in (g.dest / "MEMORY.md").read_text().splitlines()
+    for path in (source(env, "one"), other, source(env, "two")):
+        assert not path.exists()
+        assert path.with_name("memory.merged-2026-10-29").is_dir()
+    assert local_settings(env, "one")["autoMemoryDirectory"] == SHARED
+    assert local_settings(env, "two")["autoMemoryDirectory"] == SHARED
+
+
+def test_config_dir_named_by_the_environment_is_merged(
+    env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    elsewhere = tmp_path / "elsewhere"  # outside home and unmarked: the variable alone names it
+    other = memory_in(elsewhere, cm.path_key(str(env["two"])), {"e.md": "e"})
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(elsewhere))
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    assert other in [s.path for s in plans[0].sources]
+    cm.apply(plans, today="2026-10-29")
+    assert (plans[0].dest / "e.md").read_text() == "e"
+    assert other.with_name("memory.merged-2026-10-29").is_dir()
+    assert not (elsewhere / "repo-memory").exists()  # the shared store stays under ~/.claude
+
+
+def test_shared_store_is_created_without_a_default_config_dir(tmp_path: Path) -> None:
+    import stat
+
+    home = tmp_path / "home"
+    clone = make_clone(home / "github" / "demo", URL)
+    (clone / ".gitignore").write_text(".claude/settings.local.json\n")
+    second = config_dir(home, ".claude2")
+    memory = memory_in(second, cm.path_key(str(clone)), {"a.md": "a"})
+    plans = cm.plan({str(clone): {"url": URL, "identity": "a2f0/demo"}}, claude_home=home / ".claude", home=home)
+    cm.apply(plans, today="2026-10-29")
+    assert (home / ".claude" / "repo-memory" / "a2f0" / "demo" / "a.md").read_text() == "a"
+    assert stat.S_IMODE((home / ".claude").stat().st_mode) == 0o700
+    assert memory.with_name("memory.merged-2026-10-29").is_dir()
+    assert json.loads((clone / ".claude" / "settings.local.json").read_text())["autoMemoryDirectory"] == SHARED
+
+
+def test_unmarked_claude_dir_is_not_a_config_dir(env: dict[str, Path]) -> None:
+    stray = memory_in(env["home"] / ".claude-backup", cm.path_key(str(env["one"])), {"x.md": "x"})
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    assert stray not in [s.path for s in plans[0].sources]
+    cm.apply(plans, today="2026-10-29")
+    assert (stray / "x.md").read_text() == "x"
+    assert not (plans[0].dest / "x.md").exists()
+
+
+def test_config_dirs_sharing_a_real_path_are_read_once(env: dict[str, Path]) -> None:
+    (env["claude"] / "settings.json").write_text("{}")
+    (env["home"] / ".claude2").symlink_to(env["claude"], target_is_directory=True)
+    third = config_dir(env["home"], ".claude3")
+    (third / "projects").symlink_to(env["claude"] / "projects", target_is_directory=True)
+    assert cm.claude_config_dirs(env["home"], {}) == [env["claude"], third]
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    assert [s.path for s in plans[0].sources] == [source(env, "one"), source(env, "two")]
+    cm.apply(plans, today="2026-10-29")
+    assert plans[0].kept == []
+    assert not source(env, "one").exists() and not source(env, "two").exists()
+    assert local_settings(env, "one")["autoMemoryDirectory"] == SHARED
+
+
+def test_memory_setting_in_another_config_dirs_user_settings_is_respected(env: dict[str, Path]) -> None:
+    second = config_dir(env["home"], ".claude2", json.dumps({"autoMemoryDirectory": "~/mine"}))
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    assert plans[0].blocked == (
+        "autoMemoryDirectory is set in the user settings ~/.claude2/settings.json (~/mine); left alone"
+    )
+    cm.apply(plans, today="2026-10-29")
+    assert source(env, "one").is_dir() and source(env, "two").is_dir()
+    assert "autoMemoryDirectory" not in local_settings(env, "one")
+    (second / "settings.json").write_text("{not json")
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    assert plans[0].blocked == "the user settings ~/.claude2/settings.json cannot be read; left alone"
+
+
+def test_alias_finds_its_memory_in_every_config_dir(env: dict[str, Path]) -> None:
+    second = config_dir(env["home"], ".claude2")
+    first = env["claude"] / "projects" / "-old-stealth" / "memory"
+    other = memory_in(second, "-old-stealth", {"MEMORY.md": "- [E](e.md) — e\n", "e.md": "e"})
+    gone = memory_in(second, "-gone", {"g.md": "g"})  # held only by the second config directory
+    aliases = {"-old-stealth": "a2f0/demo", "-gone": "a2f0/gone"}
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"], aliases=aliases)
+    by_identity = {g.identity: g for g in plans}
+    assert {first, other} <= {s.path for s in by_identity["a2f0/demo"].sources}
+    assert [s.path for s in by_identity["a2f0/gone"].sources] == [gone]
+    cm.apply(plans, today="2026-10-29")
+    dest = by_identity["a2f0/demo"].dest
+    assert (dest / "c.md").read_text() == "c"
+    assert (dest / "e.md").read_text() == "e"
+    assert {"- [C](c.md) — c", "- [E](e.md) — e"} <= set((dest / "MEMORY.md").read_text().splitlines())
+    assert (by_identity["a2f0/gone"].dest / "g.md").read_text() == "g"
+    for path in (first, other, gone):
+        assert not path.exists()
+        assert path.with_name("memory.merged-2026-10-29").is_dir()
+
+
+def test_conflict_between_config_dirs_keeps_both_in_place(env: dict[str, Path]) -> None:
+    second = config_dir(env["home"], ".claude2")
+    other = memory_in(second, cm.path_key(str(env["one"])), {"a.md": "the second account's a"})
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    assert plans[0].conflicts == [other / "a.md"]
+    cm.apply(plans, today="2026-10-29")
+    assert (plans[0].dest / "a.md").read_text() == "a"
+    assert (other / "a.md").read_text() == "the second account's a"
+    assert (source(env, "one") / "a.md").is_file()  # its clone was not redirected, so it stays readable
+    assert "autoMemoryDirectory" not in local_settings(env, "one")
+    assert not source(env, "two").exists()
+
+
+def test_memory_appearing_in_another_config_dir_blocks_the_redirect(env: dict[str, Path]) -> None:
+    second = config_dir(env["home"], ".claude2")
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    late = memory_in(second, cm.path_key(str(env["one"])), {"late.md": "late"})
+    cm.apply(plans, today="2026-10-29")
+    assert dict(plans[0].kept)[late] == "memory appeared since planning; re-run to merge it"
+    assert (late / "late.md").is_file()
+    assert (source(env, "one") / "a.md").is_file()
+    assert "autoMemoryDirectory" not in local_settings(env, "one")
+    assert local_settings(env, "two")["autoMemoryDirectory"] == SHARED
+
+
+def test_source_changing_in_one_config_dir_keeps_its_siblings(
+    env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    second = config_dir(env["home"], ".claude2")
+    other = memory_in(second, cm.path_key(str(env["one"])), {"d.md": "d"})
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    real = cm._redirect
+
+    def redirect_then_session_writes(g: Any, clone: Path, path: Path, target: str) -> None:
+        real(g, clone, path, target)
+        if clone == env["one"]:
+            (other / "late.md").write_text("late")
+
+    monkeypatch.setattr(cm, "_redirect", redirect_then_session_writes)
+    cm.apply(plans, today="2026-10-29")
+    # The redirect is undone, so clone one reads its own memory again in both config directories.
+    assert "autoMemoryDirectory" not in local_settings(env, "one")
+    assert (other / "late.md").is_file()
+    assert (source(env, "one") / "a.md").is_file()
+    assert {source(env, "one"), other} <= plans[0].kept_paths
+    assert not source(env, "two").exists()
+
+
+def test_cli_names_the_config_dirs_it_reads(
+    env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import argparse
+
+    config_dir(env["home"], ".claude2")
+    ident.cache_path().write_text(json.dumps({"checkouts": checkouts(env)}))
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: env["home"]))
+    parser = argparse.ArgumentParser()
+    cli.setup(parser)
+    assert cli.main(parser.parse_args(["claude-memory"])) == 0
+    assert "Claude Code config directories: ~/.claude, ~/.claude2\n" in capsys.readouterr().out
+
+
+def _fake_processes(monkeypatch: pytest.MonkeyPatch, ps: str, lsof: str, ps_status: int = 0) -> list[list[str]]:
+    calls: list[list[str]] = []
+
+    def run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        if cmd[0] == "ps":
+            return subprocess.CompletedProcess(cmd, ps_status, ps, "")
+        return subprocess.CompletedProcess(cmd, 0 if lsof else 1, lsof, "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return calls
+
+
+def test_live_claude_dirs_finds_sessions_by_the_name_they_started_as(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    # A native install's kernel name is its version (2.1.325), so lsof -c claude finds nothing;
+    # ps reports the name it started as, which a claude2 wrapper keeps.
+    ps = "    1 /sbin/launchd\n   12 claude\n   13 /Users/me/.local/bin/claude\n   14 -zsh\n   15 node\n"
+    calls = _fake_processes(monkeypatch, ps, f"p12\nfcwd\nn{a}\np13\nfcwd\nn{b}\n")
+    assert cm.live_claude_dirs() == {a.resolve(), b.resolve()}
+    assert calls == [["ps", "-A", "-o", "pid=", "-o", "comm="], ["lsof", "-a", "-d", "cwd", "-p", "12,13", "-Fpn"]]
+
+
+def test_live_claude_dirs_without_sessions_skips_lsof(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _fake_processes(monkeypatch, "    1 /sbin/launchd\n   14 -zsh\n", "")
+    assert cm.live_claude_dirs() == set()
+    assert len(calls) == 1
+    _fake_processes(monkeypatch, "", "", ps_status=1)
+    assert cm.live_claude_dirs() is None
+
+
+def test_live_claude_dirs_cannot_tell_when_a_running_session_is_unseen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    _fake_processes(monkeypatch, "   12 claude\n   13 claude\n", f"p12\nfcwd\nn{tmp_path}\n")
+    gone: set[int] = set()
+
+    def kill(pid: int, _signal: int) -> None:
+        if pid in gone:
+            raise ProcessLookupError(pid)
+        raise PermissionError(pid)  # running as another user
+
+    monkeypatch.setattr(os, "kill", kill)
+    assert cm.live_claude_dirs() is None
+    gone.add(13)  # exited between ps and lsof
+    assert cm.live_claude_dirs() == {tmp_path.resolve()}
+
+
+def test_claude_pids_runs_on_this_platform() -> None:
+    assert cm.claude_pids() is not None
