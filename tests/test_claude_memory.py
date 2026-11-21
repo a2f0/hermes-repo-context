@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
@@ -1303,18 +1304,8 @@ def test_redirect_is_undone_once_when_sources_in_two_config_dirs_change(
         (source(env, "one") / "late.md").write_text("late")
         (other / "late.md").write_text("late")
 
-    real_redirect = cm._redirect
-    locked: list[Path] = []
-
-    def redirect_then_lock(g: Any, clone: Path, path: Path, target: str) -> None:
-        real_redirect(g, clone, path, target)
-        if clone == env["one"]:
-            session_writes()
-            path.parent.chmod(0o500)  # so undoing the redirect fails
-            locked.append(path.parent)
-
     monkeypatch.setattr(cm, "_unredirect", unredirect)
-    monkeypatch.setattr(cm, "_redirect", redirect_then_lock)
+    locked = _redirect_then(env, monkeypatch, session_writes)
     try:
         cm.apply(plans, today="2026-10-29")
     finally:
@@ -1404,7 +1395,7 @@ def test_redirect_transitions() -> None:
     assert reading == ["shared_before", "redirected_now", "stuck"]
 
 
-def _redirect_then(env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, then: Any) -> list[Path]:
+def _redirect_then(env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, then: Callable[[], None]) -> list[Path]:
     """After clone one is redirected, run *then* and make its ``.claude`` read-only, so undoing
     the redirect fails; returns the directories to unlock."""
     real = cm._redirect
@@ -1427,8 +1418,7 @@ def test_clone_whose_redirect_cannot_be_undone_keeps_every_source(
 ) -> None:
     second = config_dir(env["home"], ".claude2")
     key = cm.path_key(str(env["one"]))
-    if late == "changed":
-        other = memory_in(second, key, {"d.md": "d"})
+    other = memory_in(second, key, {"d.md": "d"}) if late == "changed" else None
     plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
 
     def session_writes() -> None:
@@ -1445,9 +1435,24 @@ def test_clone_whose_redirect_cannot_be_undone_keeps_every_source(
     # The setting stays until removed by hand; clone one must then find all its memory in place.
     assert dict(g.kept)[source(env, "one")] == "its clone's redirect could not be undone"
     assert (source(env, "one") / "a.md").is_file()
-    if late == "changed":
+    if other is not None:
         assert (other / "d.md").is_file()
     assert not source(env, "two").exists()
+
+
+@pytest.mark.parametrize("stale", ["reused", "remote"])
+def test_stale_clone_keeps_only_memory_that_exists(env: dict[str, Path], stale: str) -> None:
+    second = config_dir(env["home"], ".claude2")
+    found = checkouts(env)
+    if stale == "reused":
+        found[str(env["two"])]["reused"] = True
+    else:
+        url = "git@github.com:a2f0/other.git"
+        subprocess.run(["git", "-C", str(env["two"]), "remote", "set-url", "origin", url], check=True)
+    plans = cm.plan(found, claude_home=env["claude"], home=env["home"])
+    # Clone two has memory under ~/.claude only; ~/.claude2 holds none to keep in place.
+    assert source(env, "two") in plans[0].kept_paths
+    assert second / "projects" / cm.path_key(str(env["two"])) / "memory" not in plans[0].kept_paths
 
 
 def test_cli_names_the_config_dirs_it_reads(
