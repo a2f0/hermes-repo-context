@@ -369,6 +369,12 @@ class Wrote:
 
 
 @dataclass(frozen=True)
+class FoundShared:
+    """The setting already named the shared directory when apply came to write it: another run
+    made that redirect, so this one must never undo it."""
+
+
+@dataclass(frozen=True)
 class WriteFailed:
     """The redirect could not be written."""
 
@@ -387,7 +393,7 @@ class RestoreFailed:
     reason: str
 
 
-RedirectEvent = Wrote | WriteFailed | Restored | RestoreFailed
+RedirectEvent = Wrote | FoundShared | WriteFailed | Restored | RestoreFailed
 
 
 def redirect_transition(state: RedirectState, event: RedirectEvent) -> RedirectState:
@@ -397,6 +403,8 @@ def redirect_transition(state: RedirectState, event: RedirectEvent) -> RedirectS
     match event:
         case Wrote(path=path, value=value):
             return RedirectedNow(path, value) if isinstance(state, OwnMemory) else state
+        case FoundShared():
+            return SharedBefore() if isinstance(state, OwnMemory) else state
         case WriteFailed(reason=reason):
             return RedirectFailed(reason) if isinstance(state, OwnMemory) else state
         case Restored():
@@ -905,7 +913,10 @@ def _redirect(g: GroupPlan, clone: Path, path: Path, target: str) -> None:
         _keep_clone(g, clone, f"its settings changed since planning: {note}")
         return
     current = data.get(SETTING)
-    if current and current != target:
+    if current == target:
+        g.advance(clone, FoundShared())  # set since planning, by another run: not this run's to undo
+        return
+    if current:
         _keep_clone(g, clone, f"its settings changed since planning: {SETTING} is {current}")
         return
     try:

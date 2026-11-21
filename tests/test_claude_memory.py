@@ -1465,21 +1465,45 @@ def test_redirect_transitions() -> None:
     own, before = cm.OwnMemory(), cm.SharedBefore()
     now = cm.RedirectedNow(path, value)
     wrote, write_failed = cm.Wrote(path, value), cm.WriteFailed("no space")
+    found_shared = cm.FoundShared()
     restored, restore_failed = cm.Restored(), cm.RestoreFailed("read-only")
     assert cm.redirect_transition(own, wrote) == now
+    assert cm.redirect_transition(own, found_shared) == before
     assert cm.redirect_transition(own, write_failed) == cm.RedirectFailed("no space")
     assert cm.redirect_transition(now, restored) == cm.Undone()
     assert cm.redirect_transition(now, restore_failed) == cm.Stuck("read-only")
     # Only a redirect this run made is undone, once; only a clone reading its own memory is
     # redirected. Every other event leaves the state alone.
     for state in (own, before, now, cm.Undone(), cm.RedirectFailed("x"), cm.Stuck("x")):
-        for event in (wrote, write_failed, restored, restore_failed):
-            if (state, event) not in {(own, wrote), (own, write_failed), (now, restored), (now, restore_failed)}:
+        for event in (wrote, found_shared, write_failed, restored, restore_failed):
+            legal = {(own, wrote), (own, found_shared), (own, write_failed), (now, restored), (now, restore_failed)}
+            if (state, event) not in legal:
                 assert cm.redirect_transition(state, event) == state, (state, event)
     reading = [
         s.status for s in (own, before, now, cm.Undone(), cm.RedirectFailed("x"), cm.Stuck("x")) if cm.reads_shared(s)
     ]
     assert reading == ["shared_before", "redirected_now", "stuck"]
+
+
+def test_redirect_set_by_another_run_since_planning_is_never_undone(
+    env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    settings = env["two"] / ".claude" / "settings.local.json"
+    settings.write_text(json.dumps({"autoMemoryDirectory": SHARED}))  # another run, after planning
+    real = cm._redirect
+
+    def redirect_then_session_writes(g: Any, clone: Path, path: Path, target: str) -> None:
+        real(g, clone, path, target)
+        if clone == env["two"]:
+            (source(env, "two") / "late.md").write_text("late")
+
+    monkeypatch.setattr(cm, "_redirect", redirect_then_session_writes)
+    cm.apply(plans, today="2026-10-29")
+    g = plans[0]
+    assert isinstance(g.redirect(env["two"]), cm.SharedBefore)
+    assert dict(g.kept)[source(env, "two")] == "changed since planning; re-run to merge it"
+    assert local_settings(env, "two")["autoMemoryDirectory"] == SHARED  # left as the other run set it
 
 
 def _redirect_then(env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, then: Callable[[], None]) -> list[Path]:
