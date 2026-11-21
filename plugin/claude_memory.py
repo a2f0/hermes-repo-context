@@ -497,9 +497,10 @@ def plan(
     aliases: dict[str, str] | None = None,
     only: Iterable[str] = (),
 ) -> list[GroupPlan]:
-    """Plan the merge into ``claude_home/repo-memory`` of the memory each clone (and each
-    ``--alias`` project key) holds under ``projects/`` in every Claude Code config directory;
-    *config_dirs* defaults to ``claude_config_dirs(home)``."""
+    """Plan the merge of the memory each clone (and each ``--alias`` project key) holds under
+    ``projects/`` in every Claude Code config directory. *claude_home* (``~/.claude``) only
+    holds the shared store, ``repo-memory``; the sources come from *config_dirs*, which
+    defaults to ``claude_config_dirs(home)``."""
     dirs = claude_config_dirs(home) if config_dirs is None else list(config_dirs)
     # Two config directories can share one projects directory through a symlink; read it once.
     projects_dirs: list[Path] = []
@@ -852,13 +853,13 @@ def _unredirect(g: GroupPlan, clone: Path, path: Path, target: str) -> None:
 
 def claude_pids() -> set[int] | None:
     """This user's running Claude Code processes, or None when ``ps`` fails: those started as
-    ``claude`` (argv[0], or on Linux the process name, starts with it). A ``claude2`` shell
-    function runs ``claude`` too. The kernel's own name for a native install is its versioned
-    binary (``2.1.325``), so ``lsof -c claude`` alone finds none of those sessions on macOS.
-    Another user's sessions cannot write this user's private memory, so they do not count."""
+    ``claude`` (argv[0] on macOS, the process name on Linux), as a ``claude2`` shell function
+    still runs it. The kernel's own name for a native install is its versioned binary
+    (``2.1.325``), so ``lsof -c claude`` alone finds none of those sessions on macOS. Another
+    user's sessions cannot write this user's private memory, and a zombie writes nothing."""
     try:
         out = subprocess.run(
-            ["ps", "-A", "-o", "pid=", "-o", "uid=", "-o", "comm="],
+            ["ps", "-A", "-o", "pid=", "-o", "uid=", "-o", "stat=", "-o", "comm="],
             capture_output=True,
             text=True,
             errors="replace",
@@ -872,10 +873,10 @@ def claude_pids() -> set[int] | None:
     uid = str(os.getuid())
     pids: set[int] = set()
     for line in out.stdout.splitlines():
-        fields = line.split(None, 2)
-        if len(fields) < 3 or not fields[0].isdigit() or fields[1] != uid:
+        fields = line.split(None, 3)
+        if len(fields) < 4 or not fields[0].isdigit() or fields[1] != uid or fields[2].startswith("Z"):
             continue
-        if fields[2].strip().rsplit("/", 1)[-1].startswith("claude"):
+        if fields[3].strip().rsplit("/", 1)[-1] == "claude":
             pids.add(int(fields[0]))
     return pids
 
@@ -990,7 +991,7 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
                 for p in claimed:
                     g.keep(p, "its alias has not merged it yet; re-run")
                 continue
-            appeared = [p for p in g.clone_sources.get(clone, []) if p not in planned and _has_files(p)]
+            appeared = [p for p in _unplanned(g, [clone], planned) if _has_files(p)]
             if appeared:
                 for p in appeared:
                     g.keep(p, "memory appeared since planning; re-run to merge it")
@@ -1001,14 +1002,14 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
                     redirected_now[clone] = (path, data[SETTING])
         # Memory a session created while the settings were being written was never planned.
         for clone, (settings_path, value) in list(redirected_now.items()):
-            appeared = [p for p in g.clone_sources.get(clone, []) if p not in planned and _has_files(p)]
+            appeared = [p for p in _unplanned(g, [clone], planned) if _has_files(p)]
             if appeared:
                 for p in appeared:
                     g.keep(p, "memory appeared while redirecting; re-run to merge it")
                 _unredirect(g, clone, settings_path, value)
                 del redirected_now[clone]
-        # A clone reads a memory directory in each config directory, so all of its sources are
-        # checked together just before any is renamed, and its redirect is undone at most once.
+        # A clone reads a memory directory in each config directory, so all of them are checked
+        # together just before any of its sources is renamed, and its redirect is undone at most once.
         units: dict[frozenset[Path], list[Source]] = {}
         for src in g.archivable():
             units.setdefault(frozenset(src.all_clones) or frozenset({src.path}), []).append(src)
@@ -1021,7 +1022,11 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
             changed = [src for src in unit if src.changed()]
             for src in changed:
                 g.keep(src.path, "changed since planning; re-run to merge it")
-            if changed:
+            # Memory a session created since the redirect, in a config directory that had none.
+            appeared = [p for p in dict.fromkeys(_unplanned(g, clones, planned)) if _has_files(p)]
+            for p in appeared:
+                g.keep(p, "memory appeared while redirecting; re-run to merge it")
+            if changed or appeared:
                 for c in clones:
                     if c in redirected_now:
                         _unredirect(g, c, *redirected_now.pop(c))
@@ -1031,13 +1036,18 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
                 for src in rest:
                     g.keep(src.path, "its clone's redirect could not be undone")
                 continue
-            if changed and not all(_reads(c, g.target) for c in clones):
+            if (changed or appeared) and not all(_reads(c, g.target) for c in clones):
                 # Undone: the clone reads its own memory again, in every config directory.
                 for src in rest:
                     g.keep(src.path, "its clone no longer reads the shared directory")
                 continue
             for src in rest:
                 _archive(g, src, stamp)
+
+
+def _unplanned(g: GroupPlan, clones: Iterable[Path], planned: set[Path]) -> list[Path]:
+    """The memory directories of *clones* that apply is not merging."""
+    return [p for c in clones for p in g.clone_sources.get(c, []) if p not in planned]
 
 
 def _reads(clone: Path, target: str) -> bool:

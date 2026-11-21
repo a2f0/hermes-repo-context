@@ -1327,6 +1327,30 @@ def test_redirect_is_undone_once_when_sources_in_two_config_dirs_change(
     assert (source(env, "one") / "late.md").is_file() and (other / "late.md").is_file()
 
 
+def test_memory_appearing_in_another_config_dir_before_archiving_undoes_the_redirect(
+    env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    second = config_dir(env["home"], ".claude2")
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    key = cm.path_key(str(env["one"]))
+    real_reads = cm._reads
+
+    def reads_then_session_writes(clone: Path, target: str) -> bool:
+        # After the redirect and its check, as archiving starts: a session writes a new directory.
+        if clone == env["one"] and not (second / "projects" / key).exists():
+            memory_in(second, key, {"late.md": "late"})
+        return real_reads(clone, target)
+
+    monkeypatch.setattr(cm, "_reads", reads_then_session_writes)
+    cm.apply(plans, today="2026-10-29")
+    late = second / "projects" / key / "memory"
+    assert dict(plans[0].kept)[late] == "memory appeared while redirecting; re-run to merge it"
+    assert "autoMemoryDirectory" not in local_settings(env, "one")
+    assert (source(env, "one") / "a.md").is_file()
+    assert (late / "late.md").is_file()
+    assert not source(env, "two").exists()
+
+
 def _redirect_then(env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, then: Any) -> list[Path]:
     """After clone one is redirected, run *then* and make its ``.claude`` read-only, so undoing
     the redirect fails; returns the directories to unlock."""
@@ -1391,6 +1415,12 @@ def test_cli_names_the_config_dirs_it_reads(
     out = capsys.readouterr().out
     assert f"Claude Code config directories: ~/.claude, ~/.claude2, {outside}\n" in out
     assert f"    from {outside / 'projects' / cm.path_key(str(env['two'])) / 'memory'}\n" in out
+    # A shell leaves ~ unexpanded after "="; a missing directory is a typo, not an empty one.
+    monkeypatch.setenv("HOME", str(env["home"]))
+    assert cli.main(parser.parse_args(["claude-memory", "--config-dir=~/.claude2"])) == 0
+    assert "Claude Code config directories: ~/.claude, ~/.claude2\n" in capsys.readouterr().out
+    assert cli.main(parser.parse_args(["claude-memory", "--config-dir=~/.claude3"])) == 2
+    assert "Invalid --config-dir" in capsys.readouterr().out
 
 
 def _fake_processes(monkeypatch: pytest.MonkeyPatch, ps: str, lsof: str, ps_status: int = 0) -> list[list[str]]:
@@ -1415,22 +1445,23 @@ def test_live_claude_dirs_finds_sessions_by_the_name_they_started_as(
     me, other = os.getuid(), os.getuid() + 1
     # A native install's kernel name is its version (2.1.325), so lsof -c claude finds nothing;
     # ps reports the name it started as, which a claude2 wrapper keeps. Another user's session
-    # cannot write this user's memory, and lsof could not read its directory.
+    # cannot write this user's memory, a zombie writes nothing, and other claude-* tools are not
+    # Claude Code.
     ps = (
-        f"    1     0 /sbin/launchd\n   12 {me:5} claude\n   13 {me:5} /Users/me/.local/bin/claude\n"
-        f"   14 {me:5} -zsh\n   15 {me:5} node\n   16 {other:5} claude\n"
-        f"   17 {me:5} /Applications/My Tools/claude\n"
+        f"    1     0 Ss /sbin/launchd\n   12 {me:5} S+ claude\n   13 {me:5} Ss /Users/me/.local/bin/claude\n"
+        f"   14 {me:5} Ss -zsh\n   15 {me:5} S node\n   16 {other:5} S+ claude\n"
+        f"   17 {me:5} T /Applications/My Tools/claude\n   18 {me:5} Z claude\n   19 {me:5} S claude-squad\n"
     )
     calls = _fake_processes(monkeypatch, ps, f"p12\nfcwd\nn{a}\np13\nfcwd\nn{b}\np17\nfcwd\nn{b}\n")
     assert cm.live_claude_dirs() == {a.resolve(), b.resolve()}
     assert calls == [
-        ["ps", "-A", "-o", "pid=", "-o", "uid=", "-o", "comm="],
+        ["ps", "-A", "-o", "pid=", "-o", "uid=", "-o", "stat=", "-o", "comm="],
         ["lsof", "-a", "-d", "cwd", "-p", "12,13,17", "-Fpn"],
     ]
 
 
 def test_live_claude_dirs_without_sessions_skips_lsof(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = _fake_processes(monkeypatch, f"    1     0 /sbin/launchd\n   14 {os.getuid()} -zsh\n", "")
+    calls = _fake_processes(monkeypatch, f"    1     0 Ss /sbin/launchd\n   14 {os.getuid()} Ss -zsh\n", "")
     assert cm.live_claude_dirs() == set()
     assert len(calls) == 1
     _fake_processes(monkeypatch, "", "", ps_status=1)
@@ -1441,7 +1472,7 @@ def test_live_claude_dirs_cannot_tell_when_a_running_session_is_unseen(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     me = os.getuid()
-    _fake_processes(monkeypatch, f"   12 {me} claude\n   13 {me} claude\n", f"p12\nfcwd\nn{tmp_path}\n")
+    _fake_processes(monkeypatch, f"   12 {me} S claude\n   13 {me} S claude\n", f"p12\nfcwd\nn{tmp_path}\n")
     gone: set[int] = set()
 
     def kill(pid: int, _signal: int) -> None:
@@ -1453,6 +1484,21 @@ def test_live_claude_dirs_cannot_tell_when_a_running_session_is_unseen(
     assert cm.live_claude_dirs() is None
     gone.add(13)  # exited between ps and lsof
     assert cm.live_claude_dirs() == {tmp_path.resolve()}
+
+
+def test_apply_refuses_when_sessions_cannot_be_read(
+    env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import argparse
+
+    ident.cache_path().write_text(json.dumps({"checkouts": checkouts(env)}))
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: env["home"]))
+    monkeypatch.setattr(cm, "live_claude_dirs", lambda: None)
+    parser = argparse.ArgumentParser()
+    cli.setup(parser)
+    assert cli.main(parser.parse_args(["claude-memory", "--apply"])) == 1
+    assert "Cannot tell where Claude Code is running" in capsys.readouterr().out
+    assert source(env, "one").is_dir() and source(env, "two").is_dir()
 
 
 @pytest.mark.skipif(shutil.which("ps") is None, reason="needs ps")

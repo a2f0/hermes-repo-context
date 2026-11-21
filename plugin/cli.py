@@ -134,7 +134,12 @@ def run_claude_memory(args: argparse.Namespace) -> int:
         print(f"No clones in {ident.cache_path()}; run `{ident.SYNC_COMMAND}` first, or pass --alias.")
         return 1
     home = Path.home()
-    config_dirs = claude_memory.claude_config_dirs(home, extra=args.config_dir)
+    extra = [Path(os.path.expanduser(d)) for d in args.config_dir]
+    for d in extra:
+        if not d.is_dir():
+            print(f"Invalid --config-dir {str(d)!r}; not a directory.")
+            return 2
+    config_dirs = claude_memory.claude_config_dirs(home, extra=extra)
     try:
         plans = claude_memory.plan(
             checkouts,
