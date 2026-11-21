@@ -44,6 +44,21 @@ CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR"
 CONFIG_MARKERS = ("settings.json", ".claude.json")
 
 
+def claude_runs_with(config_dir: Path, home: Path, environ: Mapping[str, str] | None = None) -> str:
+    """Why Claude Code is known to run with *config_dir* (so excluding it would hide memory a
+    redirected clone no longer reads), or "" when discovery only guessed it from a marker."""
+    env = os.environ if environ is None else environ
+    real = os.path.realpath(config_dir)
+    if real == os.path.realpath(home / ".claude"):
+        return "it is ~/.claude"
+    named = env.get(CONFIG_DIR_ENV)
+    if named and real == os.path.realpath(os.path.abspath(named)):
+        return f"${CONFIG_DIR_ENV} names it"
+    if os.path.lexists(config_dir / ".claude.json"):
+        return "it holds .claude.json, which Claude Code writes in a directory it runs with"
+    return ""
+
+
 def claude_config_dirs(
     home: Path,
     environ: Mapping[str, str] | None = None,
@@ -657,11 +672,8 @@ def plan(
         user_path = display(config_dir / "settings.json", home)
         user_value, user_ok = configured_memory(config_dir / "settings.json")
         # Discovery can mistake another tool's ~/.claude-* directory for Claude Code's.
-        hint = (
-            ""
-            if config_dir == claude_home
-            else f" (not Claude Code's? pass --exclude-config-dir={display(config_dir, home)})"
-        )
+        guessed = not claude_runs_with(config_dir, home)
+        hint = f" (not Claude Code's? pass --exclude-config-dir={display(config_dir, home)})" if guessed else ""
         if user_value:
             user_setting = f"{SETTING} is set in the user settings {user_path} ({user_value}); left alone{hint}"
         elif not user_ok:

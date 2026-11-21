@@ -1368,8 +1368,6 @@ def test_memory_appearing_in_another_config_dir_before_archiving_undoes_the_redi
 def test_claimant_waits_for_its_aliased_memory_in_every_config_dir(
     env: dict[str, Path], held_in: tuple[str, ...], conflict_in: str
 ) -> None:
-    import shutil
-
     second = config_dir(env["home"], ".claude2")
     key = cm.path_key(str(env["two"]))
     claimed = {".claude": source(env, "two"), ".claude2": second / "projects" / key / "memory"}
@@ -1498,6 +1496,37 @@ def test_cli_names_the_config_dirs_it_reads(
     assert "cannot be read" not in out
     assert cli.main(parser.parse_args(["claude-memory", "--exclude-config-dir=~/.claude-gone"])) == 2
     assert "Invalid --exclude-config-dir" in capsys.readouterr().out
+    # A directory Claude Code runs with cannot be excluded: redirected clones would stop reading
+    # its memory.
+    (env["home"] / ".claude2" / ".claude.json").write_text("{}")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(outside))
+    for refused in ("~/.claude", "~/.claude2", str(outside)):
+        assert cli.main(parser.parse_args(["claude-memory", f"--exclude-config-dir={refused}"])) == 2
+        assert "Claude Code runs with it" in capsys.readouterr().out
+
+
+def test_cli_points_at_kept_memory_in_a_guessed_config_dir(
+    env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import argparse
+
+    backup = config_dir(env["home"], ".claude.bak")  # cp -r ~/.claude ~/.claude.bak, long ago
+    memory_in(backup, cm.path_key(str(env["one"])), {"a.md": "an older a"})
+    ident.cache_path().write_text(json.dumps({"checkouts": checkouts(env)}))
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: env["home"]))
+    monkeypatch.setenv("HOME", str(env["home"]))  # for ~ in options
+    parser = argparse.ArgumentParser()
+    cli.setup(parser)
+    assert cli.main(parser.parse_args(["claude-memory"])) == 0
+    out = capsys.readouterr().out
+    assert "CONFLICT (kept the shared copy): ~/.claude.bak/" in out
+    assert "Memory above was kept in ~/.claude.bak; if one is not a Claude Code config directory" in out
+    assert cli.main(parser.parse_args(["claude-memory", "--exclude-config-dir=~/.claude.bak"])) == 0
+    assert ".claude.bak" not in capsys.readouterr().out
+    # Memory kept in a directory Claude Code runs with gets no such note.
+    (backup / ".claude.json").write_text("{}")
+    assert cli.main(parser.parse_args(["claude-memory"])) == 0
+    assert "Memory above was kept in" not in capsys.readouterr().out
 
 
 def _fake_processes(monkeypatch: pytest.MonkeyPatch, ps: str, lsof: str, ps_status: int = 0) -> list[list[str]]:

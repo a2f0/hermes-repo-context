@@ -54,27 +54,29 @@ section in their system prompt.
   them first. `--config-dir DIR` adds one this misses, such as a directory only
   a wrapper's `CLAUDE_CONFIG_DIR` names, and `--exclude-config-dir DIR` drops
   one that is not Claude Code's, such as a backup copy of `~/.claude` or another
-  tool's `~/.claude-*` directory; both repeat. It merges each clone's
-  `<config dir>/projects/<path>/memory` from all of them into
-  `~/.claude/repo-memory/<owner>/<repo>` (lowercased, as GitHub compares names;
-  `--apply` creates `~/.claude` when only another config directory exists), sets
-  `autoMemoryDirectory` in each clone's `.claude/settings.local.json` (only
-  where Git ignores that file), which sessions of every config directory read,
-  and then renames each merged source to `memory.merged-<date>`. A source stays
-  in place when a file in it differs from the shared copy, it holds a symlink,
-  or its clone could not be redirected; a clone is redirected only when its
-  memory in every config directory merges. It leaves every clone alone while any
-  config directory's `settings.json` sets `autoMemoryDirectory` itself. When
-  memory appears in a source during `--apply`, the redirect is undone; if that
-  fails, the clone is listed as `STILL REDIRECTED` and the command exits
-  non-zero, so remove the setting by hand. Claude Code does not lock its memory,
-  so `--apply` refuses while any Claude Code session runs (any of your processes
-  whose name starts with `claude`, which covers a `claude2` wrapper); close them
-  first (or pass `--allow-running`, which can lose a racing write). It is a dry
-  run until `--apply`; `--alias=<project-key>=owner/repo` (with `=`, since
-  project keys start with `-`) merges memory whose checkout is gone, from that
-  key in every config directory. A symlinked memory directory does not work,
-  because Claude Code resolves the real path and refuses the write.
+  tool's `~/.claude-*` directory (never one Claude Code runs with: `~/.claude`,
+  the `$CLAUDE_CONFIG_DIR` one, or one holding `.claude.json`); both repeat. It
+  merges each clone's `<config dir>/projects/<path>/memory` from all of them
+  into `~/.claude/repo-memory/<owner>/<repo>` (lowercased, as GitHub compares
+  names; `--apply` creates `~/.claude` when only another config directory
+  exists), sets `autoMemoryDirectory` in each clone's
+  `.claude/settings.local.json` (only where Git ignores that file), which
+  sessions of every config directory read, and then renames each merged source
+  to `memory.merged-<date>`. A source stays in place when a file in it differs
+  from the shared copy, it holds a symlink, or its clone could not be
+  redirected; a clone is redirected only when its memory in every config
+  directory merges. It leaves every clone alone while any config directory's
+  `settings.json` sets `autoMemoryDirectory` itself. When memory appears in a
+  source during `--apply`, the redirect is undone; if that fails, the clone is
+  listed as `STILL REDIRECTED` and the command exits non-zero, so remove the
+  setting by hand. Claude Code does not lock its memory, so `--apply` refuses
+  while any Claude Code session runs (any of your processes whose name starts
+  with `claude`, which covers a `claude2` wrapper); close them first (or pass
+  `--allow-running`, which can lose a racing write). It is a dry run until
+  `--apply`; `--alias=<project-key>=owner/repo` (with `=`, since project keys
+  start with `-`) merges memory whose checkout is gone, from that key in every
+  config directory. A symlinked memory directory does not work, because Claude
+  Code resolves the real path and refuses the write.
 - **`hermes repo-context show [path]`** prints the section a session there
   would get.
 
