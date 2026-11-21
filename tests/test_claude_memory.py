@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
@@ -1268,6 +1269,47 @@ def test_source_changing_in_one_config_dir_keeps_its_siblings(
     assert not source(env, "two").exists()
 
 
+def test_redirect_is_undone_once_when_sources_in_two_config_dirs_change(
+    env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    second = config_dir(env["home"], ".claude2")
+    other = memory_in(second, cm.path_key(str(env["one"])), {"d.md": "d"})
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    undone: list[Path] = []
+    real_unredirect = cm._unredirect
+
+    def unredirect(g: Any, clone: Path, path: Path, target: str) -> None:
+        undone.append(clone)
+        real_unredirect(g, clone, path, target)
+
+    def session_writes() -> None:
+        (source(env, "one") / "late.md").write_text("late")
+        (other / "late.md").write_text("late")
+
+    real_redirect = cm._redirect
+    locked: list[Path] = []
+
+    def redirect_then_lock(g: Any, clone: Path, path: Path, target: str) -> None:
+        real_redirect(g, clone, path, target)
+        if clone == env["one"]:
+            session_writes()
+            path.parent.chmod(0o500)  # so undoing the redirect fails
+            locked.append(path.parent)
+
+    monkeypatch.setattr(cm, "_unredirect", unredirect)
+    monkeypatch.setattr(cm, "_redirect", redirect_then_lock)
+    try:
+        cm.apply(plans, today="2026-10-29")
+    finally:
+        for d in locked:
+            d.chmod(0o700)
+    g = plans[0]
+    assert undone == [env["one"]]
+    assert [clone for clone, _ in g.stuck] == [env["one"]]
+    assert {source(env, "one"), other} <= g.kept_paths
+    assert (source(env, "one") / "late.md").is_file() and (other / "late.md").is_file()
+
+
 def test_cli_names_the_config_dirs_it_reads(
     env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1301,16 +1343,25 @@ def test_live_claude_dirs_finds_sessions_by_the_name_they_started_as(
     a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir()
     b.mkdir()
+    me, other = os.getuid(), os.getuid() + 1
     # A native install's kernel name is its version (2.1.325), so lsof -c claude finds nothing;
-    # ps reports the name it started as, which a claude2 wrapper keeps.
-    ps = "    1 /sbin/launchd\n   12 claude\n   13 /Users/me/.local/bin/claude\n   14 -zsh\n   15 node\n"
-    calls = _fake_processes(monkeypatch, ps, f"p12\nfcwd\nn{a}\np13\nfcwd\nn{b}\n")
+    # ps reports the name it started as, which a claude2 wrapper keeps. Another user's session
+    # cannot write this user's memory, and lsof could not read its directory.
+    ps = (
+        f"    1     0 /sbin/launchd\n   12 {me:5} claude\n   13 {me:5} /Users/me/.local/bin/claude\n"
+        f"   14 {me:5} -zsh\n   15 {me:5} node\n   16 {other:5} claude\n"
+        f"   17 {me:5} /Applications/My Tools/claude\n"
+    )
+    calls = _fake_processes(monkeypatch, ps, f"p12\nfcwd\nn{a}\np13\nfcwd\nn{b}\np17\nfcwd\nn{b}\n")
     assert cm.live_claude_dirs() == {a.resolve(), b.resolve()}
-    assert calls == [["ps", "-A", "-o", "pid=", "-o", "comm="], ["lsof", "-a", "-d", "cwd", "-p", "12,13", "-Fpn"]]
+    assert calls == [
+        ["ps", "-A", "-o", "pid=", "-o", "uid=", "-o", "comm="],
+        ["lsof", "-a", "-d", "cwd", "-p", "12,13,17", "-Fpn"],
+    ]
 
 
 def test_live_claude_dirs_without_sessions_skips_lsof(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = _fake_processes(monkeypatch, "    1 /sbin/launchd\n   14 -zsh\n", "")
+    calls = _fake_processes(monkeypatch, f"    1     0 /sbin/launchd\n   14 {os.getuid()} -zsh\n", "")
     assert cm.live_claude_dirs() == set()
     assert len(calls) == 1
     _fake_processes(monkeypatch, "", "", ps_status=1)
@@ -1320,15 +1371,14 @@ def test_live_claude_dirs_without_sessions_skips_lsof(monkeypatch: pytest.Monkey
 def test_live_claude_dirs_cannot_tell_when_a_running_session_is_unseen(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import os
-
-    _fake_processes(monkeypatch, "   12 claude\n   13 claude\n", f"p12\nfcwd\nn{tmp_path}\n")
+    me = os.getuid()
+    _fake_processes(monkeypatch, f"   12 {me} claude\n   13 {me} claude\n", f"p12\nfcwd\nn{tmp_path}\n")
     gone: set[int] = set()
 
     def kill(pid: int, _signal: int) -> None:
         if pid in gone:
             raise ProcessLookupError(pid)
-        raise PermissionError(pid)  # running as another user
+        # Running, but lsof could not see it (from inside a sandbox, say).
 
     monkeypatch.setattr(os, "kill", kill)
     assert cm.live_claude_dirs() is None

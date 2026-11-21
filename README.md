@@ -50,7 +50,9 @@ section in their system prompt.
   remote. Claude Code keeps memory per config directory, so it reads every one:
   the directory `$CLAUDE_CONFIG_DIR` names, `~/.claude`, and any other
   `~/.claude*` directory that holds `settings.json` or `.claude.json` (such as
-  `~/.claude2` for a second account), each once by real path. It merges each
+  `~/.claude2` for a second account), each once by real path. The output lists
+  them first. A backup copy of `~/.claude` left in the home directory under such
+  a name counts too, so move it elsewhere before `--apply`. It merges each
   clone's `<config dir>/projects/<path>/memory` from all of them into
   `~/.claude/repo-memory/<owner>/<repo>` (lowercased, as GitHub compares names),
   sets `autoMemoryDirectory` in each clone's `.claude/settings.local.json` (only

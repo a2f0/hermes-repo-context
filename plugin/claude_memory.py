@@ -849,13 +849,14 @@ def _unredirect(g: GroupPlan, clone: Path, path: Path, target: str) -> None:
 
 
 def claude_pids() -> set[int] | None:
-    """Running Claude Code processes, or None when ``ps`` fails: those started as ``claude``
-    (argv[0], or on Linux the process name, starts with it). A ``claude2`` shell function runs
-    ``claude`` too. The kernel's own name for a native install is its versioned binary
-    (``2.1.325``), so ``lsof -c claude`` alone finds none of those sessions on macOS."""
+    """This user's running Claude Code processes, or None when ``ps`` fails: those started as
+    ``claude`` (argv[0], or on Linux the process name, starts with it). A ``claude2`` shell
+    function runs ``claude`` too. The kernel's own name for a native install is its versioned
+    binary (``2.1.325``), so ``lsof -c claude`` alone finds none of those sessions on macOS.
+    Another user's sessions cannot write this user's private memory, so they do not count."""
     try:
         out = subprocess.run(
-            ["ps", "-A", "-o", "pid=", "-o", "comm="],
+            ["ps", "-A", "-o", "pid=", "-o", "uid=", "-o", "comm="],
             capture_output=True,
             text=True,
             errors="replace",
@@ -866,18 +867,21 @@ def claude_pids() -> set[int] | None:
         return None
     if out.returncode != 0:
         return None
+    uid = str(os.getuid())
     pids: set[int] = set()
     for line in out.stdout.splitlines():
-        pid, _, command = line.strip().partition(" ")
-        if pid.isdigit() and command.strip().rsplit("/", 1)[-1].startswith("claude"):
-            pids.add(int(pid))
+        fields = line.split(None, 2)
+        if len(fields) < 3 or not fields[0].isdigit() or fields[1] != uid:
+            continue
+        if fields[2].strip().rsplit("/", 1)[-1].startswith("claude"):
+            pids.add(int(fields[0]))
     return pids
 
 
 def live_claude_dirs() -> set[Path] | None:
-    """Working directories of running Claude Code processes, or None when they cannot all be
-    read: ``ps`` or ``lsof`` failed, or lsof cannot see a session that still runs (another
-    user's, or from inside a sandbox)."""
+    """Working directories of this user's running Claude Code processes, or None when they
+    cannot all be read: ``ps`` or ``lsof`` failed, or lsof cannot see a session that still
+    runs (from inside a sandbox, say)."""
     pids = claude_pids()
     if pids is None:
         return None
@@ -911,7 +915,7 @@ def live_claude_dirs() -> set[Path] | None:
         except ProcessLookupError:
             continue  # it exited after ps listed it
         except OSError:
-            pass  # it runs as another user
+            pass  # it exists but cannot be signalled
         return None
     return dirs
 
@@ -961,8 +965,10 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
     for g in sorted(plans, key=lambda g: not g.watch):
         if g.blocked or _dest_problem(g.root, g.dest):
             continue
-        # From the home directory: ~/.claude itself is missing when only another config dir is used.
-        _private_dirs(g.root.parent.parent, g.dest)
+        # ~/.claude itself is missing when only another config directory is in use.
+        with contextlib.suppress(FileExistsError):
+            g.root.parent.mkdir(mode=0o700)
+        _private_dirs(g.root.parent, g.dest)
         for src_dir, f, rel in g.copies:
             _copy(g, src_dir, f, rel)
         _write_index(g)
@@ -999,30 +1005,47 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
                     g.keep(p, "memory appeared while redirecting; re-run to merge it")
                 _unredirect(g, clone, settings_path, value)
                 del redirected_now[clone]
-        # A clone reads a memory directory in each config directory. Find every source that changed
-        # before archiving any, so undoing a clone's redirect never leaves a sibling archived.
+        # A clone reads a memory directory in each config directory, so all of its sources are
+        # checked together just before any is renamed, and its redirect is undone at most once.
+        units: dict[frozenset[Path], list[Source]] = {}
         for src in g.archivable():
-            if src.changed():
-                g.keep(src.path, "changed since planning; re-run to merge it")
-                for c in src.all_clones:
-                    if c in redirected_now:
-                        _unredirect(g, c, *redirected_now[c])
-        for src in g.archivable():
-            if any((read_settings(c / SETTINGS_FILE)[0] or {}).get(SETTING) != g.target for c in src.all_clones):
-                g.keep(src.path, "its clone no longer reads the shared directory")
+            units.setdefault(frozenset(src.all_clones) or frozenset({src.path}), []).append(src)
+        for unit in units.values():
+            clones = unit[0].all_clones
+            if not all(_reads(c, g.target) for c in clones):
+                for src in unit:
+                    g.keep(src.path, "its clone no longer reads the shared directory")
                 continue
-            if src.changed():
+            changed = [src for src in unit if src.changed()]
+            for src in changed:
                 g.keep(src.path, "changed since planning; re-run to merge it")
-                for c in src.all_clones:
+            if changed:
+                for c in clones:
                     if c in redirected_now:
-                        _unredirect(g, c, *redirected_now[c])
+                        _unredirect(g, c, *redirected_now.pop(c))
+            rest = [src for src in unit if src not in changed]
+            if changed and not all(_reads(c, g.target) for c in clones):
+                # Undone: the clone reads its own memory again, in every config directory.
+                for src in rest:
+                    g.keep(src.path, "its clone no longer reads the shared directory")
                 continue
-            target = src.path.with_name(f"memory.merged-{stamp}")
-            n = 1
-            while target.exists():
-                n += 1
-                target = src.path.with_name(f"memory.merged-{stamp}.{n}")
-            try:
-                src.path.rename(target)
-            except OSError as exc:
-                g.keep(src.path, f"archiving it failed: {exc}")
+            for src in rest:
+                _archive(g, src, stamp)
+
+
+def _reads(clone: Path, target: str) -> bool:
+    """Whether *clone*'s settings point Claude Code at *target* now."""
+    return (read_settings(clone / SETTINGS_FILE)[0] or {}).get(SETTING) == target
+
+
+def _archive(g: GroupPlan, src: Source, stamp: str) -> None:
+    """Rename a merged source to ``memory.merged-<stamp>`` (``.2`` and on when taken)."""
+    target = src.path.with_name(f"memory.merged-{stamp}")
+    n = 1
+    while target.exists():
+        n += 1
+        target = src.path.with_name(f"memory.merged-{stamp}.{n}")
+    try:
+        src.path.rename(target)
+    except OSError as exc:
+        g.keep(src.path, f"archiving it failed: {exc}")
