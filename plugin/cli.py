@@ -49,12 +49,24 @@ def setup(parser: argparse.ArgumentParser) -> None:
         default=[],
         metavar="KEY=OWNER/REPO",
         help=(
-            "merge a memory dir whose checkout is gone; project keys start with '-', so attach the "
-            "value with '=': --alias=-Users-me-github-old=me/new; repeatable"
+            "merge the memory a project key holds in any Claude Code config directory, for a checkout "
+            "that is gone; project keys start with '-', so attach the value with '=': "
+            "--alias=-Users-me-github-old=me/new; repeatable"
         ),
     )
     c.add_argument(
         "--only", action="append", default=[], metavar="OWNER/REPO", help="limit to these remotes; repeatable"
+    )
+    c.add_argument(
+        "--config-dir",
+        action="append",
+        default=[],
+        type=Path,
+        metavar="DIR",
+        help=(
+            "also read this Claude Code config directory (found without it: $CLAUDE_CONFIG_DIR, ~/.claude, "
+            "and ~/.claude* directories holding settings.json or .claude.json); repeatable"
+        ),
     )
 
     parser.set_defaults(func=main)
@@ -122,12 +134,27 @@ def run_claude_memory(args: argparse.Namespace) -> int:
         print(f"No clones in {ident.cache_path()}; run `{ident.SYNC_COMMAND}` first, or pass --alias.")
         return 1
     home = Path.home()
+    extra = [Path(os.path.expanduser(d)) for d in args.config_dir]
+    for d in extra:
+        if not d.is_dir():
+            print(f"Invalid --config-dir {str(d)!r}; not a directory.")
+            return 2
+    config_dirs = claude_memory.claude_config_dirs(home, extra=extra)
     try:
-        plans = claude_memory.plan(checkouts, claude_home=home / ".claude", home=home, aliases=aliases, only=args.only)
+        plans = claude_memory.plan(
+            checkouts,
+            claude_home=home / ".claude",
+            home=home,
+            config_dirs=config_dirs,
+            aliases=aliases,
+            only=args.only,
+        )
     except ValueError as exc:
         print(f"Invalid argument: {exc}.")
         return 2
-    print(f"{'APPLY' if args.apply else 'DRY RUN'}: shared memory under ~/.claude/repo-memory\n")
+    print(f"{'APPLY' if args.apply else 'DRY RUN'}: shared memory under ~/.claude/repo-memory")
+    found = ", ".join(claude_memory.display(d, home) for d in config_dirs) or "none found"
+    print(f"Claude Code config directories: {found}\n")
     for g in plans:
         warn = ""
         if g.over_limit:
@@ -153,8 +180,8 @@ def run_claude_memory(args: argparse.Namespace) -> int:
     if args.apply and not args.allow_running:
         live = claude_memory.live_claude_dirs()
         if live is None:
-            print("\nCannot tell whether Claude Code is running (lsof failed). Close its sessions in")
-            print("these clones, then re-run with --allow-running.")
+            print("\nCannot tell where Claude Code is running (ps or lsof failed, or a session's")
+            print("directory is unreadable). Close its sessions, then re-run with --allow-running.")
             return 1
         if live:
             # Any session can write the shared directories, including one in a clone sync never

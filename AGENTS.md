@@ -87,9 +87,12 @@ lists leads. Reviews flag new implicit machines.
 Here a closed state type is an `Enum` or a union of frozen dataclasses tagged by
 a `Literal` `status` field, matched exhaustively with `assert_never` under
 strict mypy, with its transition function in the module that owns the state.
-State lives in `plugin/claude_memory.py` (apply's copy, index, verify,
-redirect, archive sequence) and `plugin/sync.py`; today both are linear
-pipelines and single-writer flags, so convert only when a change adds phases.
+A clone's redirect in `plugin/claude_memory.py` is one: `RedirectState`,
+seeded by planning (`SharedBefore`), then advanced only through
+`redirect_transition` (`GroupPlan.advance`). The rest of
+apply's copy, index, verify, redirect, archive sequence and `plugin/sync.py`
+are linear pipelines and single-writer flags, so convert only when a change
+adds phases.
 
 ## Shared skills and shipping
 
