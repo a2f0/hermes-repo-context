@@ -88,7 +88,8 @@ Here a closed state type is an `Enum` or a union of frozen dataclasses tagged by
 a `Literal` `status` field, matched exhaustively with `assert_never` under
 strict mypy, with its transition function in the module that owns the state.
 A clone's redirect in `plugin/claude_memory.py` is one: `RedirectState`,
-advanced only through `redirect_transition` (`GroupPlan.advance`). The rest of
+seeded by planning (`SharedBefore`), then advanced only through
+`redirect_transition` (`GroupPlan.advance`). The rest of
 apply's copy, index, verify, redirect, archive sequence and `plugin/sync.py`
 are linear pipelines and single-writer flags, so convert only when a change
 adds phases.

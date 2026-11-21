@@ -434,7 +434,8 @@ class GroupPlan:
     watch: set[Path] = field(default_factory=set)  # other clones whose memory directory is a source
     # clone -> its memory directories (one per config directory) that an alias claims
     claims: dict[Path, list[Path]] = field(default_factory=dict)
-    redirects: dict[Path, RedirectState] = field(default_factory=dict)  # clone -> its redirect, when not own
+    # clone -> its redirect, once planning or apply has touched it (OwnMemory until then)
+    redirects: dict[Path, RedirectState] = field(default_factory=dict)
     failed_rels: set[PurePosixPath] = field(default_factory=set)  # copies that failed at apply time
     conflicts: list[Path] = field(default_factory=list)
     skipped: list[Path] = field(default_factory=list)
