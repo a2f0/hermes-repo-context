@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
@@ -1110,6 +1111,22 @@ def test_claude_config_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     assert cm.claude_config_dirs(tmp_path / "missing", {}) == []
 
 
+def test_broken_settings_link_marks_a_config_dir_that_blocks(env: dict[str, Path], tmp_path: Path) -> None:
+    second = env["home"] / ".claude2"
+    second.mkdir()
+    (second / "settings.json").symlink_to(tmp_path / "dotfiles-not-checked-out.json")
+    assert cm.claude_config_dirs(env["home"], {}) == [env["claude"], second]
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+    assert plans[0].blocked == "the user settings ~/.claude2/settings.json cannot be read; left alone"
+
+
+def test_extra_config_dirs_come_last_once_each(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    config_dir(home, ".claude")
+    outside = tmp_path / "xdg" / "claude2"
+    assert cm.claude_config_dirs(home, {}, extra=[outside, home / ".claude", outside]) == [home / ".claude", outside]
+
+
 def test_memory_in_every_config_dir_is_merged(env: dict[str, Path]) -> None:
     second = config_dir(env["home"], ".claude2")
     other = memory_in(
@@ -1310,18 +1327,70 @@ def test_redirect_is_undone_once_when_sources_in_two_config_dirs_change(
     assert (source(env, "one") / "late.md").is_file() and (other / "late.md").is_file()
 
 
+def _redirect_then(env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, then: Any) -> list[Path]:
+    """After clone one is redirected, run *then* and make its ``.claude`` read-only, so undoing
+    the redirect fails; returns the directories to unlock."""
+    real = cm._redirect
+    locked: list[Path] = []
+
+    def redirect_then_lock(g: Any, clone: Path, path: Path, target: str) -> None:
+        real(g, clone, path, target)
+        if clone == env["one"]:
+            then()
+            path.parent.chmod(0o500)
+            locked.append(path.parent)
+
+    monkeypatch.setattr(cm, "_redirect", redirect_then_lock)
+    return locked
+
+
+@pytest.mark.parametrize("late", ["changed", "appeared"])
+def test_clone_whose_redirect_cannot_be_undone_keeps_every_source(
+    env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, late: str
+) -> None:
+    second = config_dir(env["home"], ".claude2")
+    key = cm.path_key(str(env["one"]))
+    if late == "changed":
+        other = memory_in(second, key, {"d.md": "d"})
+    plans = cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])
+
+    def session_writes() -> None:
+        memory_in(second, key, {"late.md": "late"})
+
+    locked = _redirect_then(env, monkeypatch, session_writes)
+    try:
+        cm.apply(plans, today="2026-10-29")
+    finally:
+        for d in locked:
+            d.chmod(0o700)
+    g = plans[0]
+    assert [clone for clone, _ in g.stuck] == [env["one"]]
+    # The setting stays until removed by hand; clone one must then find all its memory in place.
+    assert dict(g.kept)[source(env, "one")] == "its clone's redirect could not be undone"
+    assert (source(env, "one") / "a.md").is_file()
+    if late == "changed":
+        assert (other / "d.md").is_file()
+    assert not source(env, "two").exists()
+
+
 def test_cli_names_the_config_dirs_it_reads(
     env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     import argparse
 
     config_dir(env["home"], ".claude2")
+    outside = env["home"].parent / "xdg-claude2"  # named only by a wrapper's CLAUDE_CONFIG_DIR
+    memory_in(outside, cm.path_key(str(env["two"])), {"x.md": "x"})
     ident.cache_path().write_text(json.dumps({"checkouts": checkouts(env)}))
     monkeypatch.setattr(Path, "home", staticmethod(lambda: env["home"]))
     parser = argparse.ArgumentParser()
     cli.setup(parser)
     assert cli.main(parser.parse_args(["claude-memory"])) == 0
     assert "Claude Code config directories: ~/.claude, ~/.claude2\n" in capsys.readouterr().out
+    assert cli.main(parser.parse_args(["claude-memory", f"--config-dir={outside}"])) == 0
+    out = capsys.readouterr().out
+    assert f"Claude Code config directories: ~/.claude, ~/.claude2, {outside}\n" in out
+    assert f"    from {outside / 'projects' / cm.path_key(str(env['two'])) / 'memory'}\n" in out
 
 
 def _fake_processes(monkeypatch: pytest.MonkeyPatch, ps: str, lsof: str, ps_status: int = 0) -> list[list[str]]:
@@ -1386,5 +1455,6 @@ def test_live_claude_dirs_cannot_tell_when_a_running_session_is_unseen(
     assert cm.live_claude_dirs() == {tmp_path.resolve()}
 
 
+@pytest.mark.skipif(shutil.which("ps") is None, reason="needs ps")
 def test_claude_pids_runs_on_this_platform() -> None:
     assert cm.claude_pids() is not None

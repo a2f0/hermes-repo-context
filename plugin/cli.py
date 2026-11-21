@@ -57,6 +57,17 @@ def setup(parser: argparse.ArgumentParser) -> None:
     c.add_argument(
         "--only", action="append", default=[], metavar="OWNER/REPO", help="limit to these remotes; repeatable"
     )
+    c.add_argument(
+        "--config-dir",
+        action="append",
+        default=[],
+        type=Path,
+        metavar="DIR",
+        help=(
+            "also read this Claude Code config directory (found without it: $CLAUDE_CONFIG_DIR, ~/.claude, "
+            "and ~/.claude* directories holding settings.json or .claude.json); repeatable"
+        ),
+    )
 
     parser.set_defaults(func=main)
 
@@ -123,7 +134,7 @@ def run_claude_memory(args: argparse.Namespace) -> int:
         print(f"No clones in {ident.cache_path()}; run `{ident.SYNC_COMMAND}` first, or pass --alias.")
         return 1
     home = Path.home()
-    config_dirs = claude_memory.claude_config_dirs(home)
+    config_dirs = claude_memory.claude_config_dirs(home, extra=args.config_dir)
     try:
         plans = claude_memory.plan(
             checkouts,

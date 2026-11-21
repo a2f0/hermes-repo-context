@@ -44,11 +44,12 @@ CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR"
 CONFIG_MARKERS = ("settings.json", ".claude.json")
 
 
-def claude_config_dirs(home: Path, environ: Mapping[str, str] | None = None) -> list[Path]:
+def claude_config_dirs(home: Path, environ: Mapping[str, str] | None = None, extra: Iterable[Path] = ()) -> list[Path]:
     """Every Claude Code config directory, once each by real path: the one ``$CLAUDE_CONFIG_DIR``
     names (when set and non-empty), ``~/.claude`` (when it exists), then, by name, every other
     directory directly in *home* whose name starts with ``.claude`` and that holds one of
-    ``CONFIG_MARKERS``. A file such as ``~/.claude.json`` is not a directory and never counts."""
+    ``CONFIG_MARKERS`` (a broken link counts, so its unreadable settings block the run as they
+    would in ``~/.claude``), then *extra*. A file such as ``~/.claude.json`` never counts."""
     env = os.environ if environ is None else environ
     candidates = []
     named = env.get(CONFIG_DIR_ENV)
@@ -63,8 +64,9 @@ def claude_config_dirs(home: Path, environ: Mapping[str, str] | None = None) -> 
         others = []
     # os.path, not Path: it answers False rather than raising for a directory it cannot read.
     candidates += [
-        p for p in others if os.path.isdir(p) and any(os.path.exists(p / marker) for marker in CONFIG_MARKERS)
+        p for p in others if os.path.isdir(p) and any(os.path.lexists(p / marker) for marker in CONFIG_MARKERS)
     ]
+    candidates += [Path(os.path.abspath(p)) for p in extra]
     dirs: list[Path] = []
     seen: set[str] = set()
     for candidate in candidates:
@@ -1024,6 +1026,11 @@ def apply(plans: list[GroupPlan], *, today: str | None = None) -> None:
                     if c in redirected_now:
                         _unredirect(g, c, *redirected_now.pop(c))
             rest = [src for src in unit if src not in changed]
+            if any(clone in clones for clone, _ in g.stuck):
+                # Its setting must be removed by hand; it must then find all its memory in place.
+                for src in rest:
+                    g.keep(src.path, "its clone's redirect could not be undone")
+                continue
             if changed and not all(_reads(c, g.target) for c in clones):
                 # Undone: the clone reads its own memory again, in every config directory.
                 for src in rest:
