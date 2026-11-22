@@ -41,13 +41,14 @@ SETTINGS_FILE = ".claude/settings.local.json"
 CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR"
 # Files that mark a home directory's other .claude* entries as Claude Code config directories:
 # Claude Code writes .claude.json in a directory it runs with, and dotfiles link settings.json in.
-# agent-tool 0.1.67 (claudeConfigDirectories) discovers config directories by this same rule, so
-# change the two together.
+# The matrix workspace (claudeConfigDirs in a2f0/matrix's src/personalSkills.ts) discovers config
+# directories by this same rule, as agent-tool did until 0.1.71 removed skill links, so change the
+# two together.
 CONFIG_MARKERS = ("settings.json", ".claude.json")
 
 
 def claude_config_dirs(home: Path, environ: Mapping[str, str] | None = None, extra: Iterable[Path] = ()) -> list[Path]:
-    """Every Claude Code config directory, as agent-tool 0.1.67 finds them: the one
+    """Every Claude Code config directory, as the matrix workspace finds them: the one
     ``$CLAUDE_CONFIG_DIR`` names when it is an absolute path, ``~/.claude``, then, by name, every
     other entry directly in *home* whose name starts with ``.claude`` and that holds one of
     ``CONFIG_MARKERS`` (following links, so a broken link does not count), then *extra*. Only

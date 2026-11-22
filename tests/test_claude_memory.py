@@ -1090,7 +1090,7 @@ def test_claude_config_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     assert cm.claude_config_dirs(home, {}) == found
     assert cm.claude_config_dirs(home, {"CLAUDE_CONFIG_DIR": ""}) == found
     # The directory the variable names comes first, marked or not, when it is an absolute path
-    # to a directory that exists (as agent-tool 0.1.67 finds them).
+    # to a directory that exists (as the matrix workspace finds them).
     elsewhere = tmp_path / "elsewhere"
     assert cm.claude_config_dirs(home, {"CLAUDE_CONFIG_DIR": str(elsewhere)}) == found
     elsewhere.mkdir()
@@ -1122,7 +1122,7 @@ def test_broken_settings_link_does_not_mark_a_config_dir(env: dict[str, Path], t
     second = env["home"] / ".claude2"
     second.mkdir()
     (second / "settings.json").symlink_to(tmp_path / "dotfiles-not-checked-out.json")
-    # Markers are followed, as agent-tool 0.1.67 follows them; .claude.json still marks it.
+    # Markers are followed, as the matrix workspace follows them; .claude.json still marks it.
     assert cm.claude_config_dirs(env["home"], {}) == [env["claude"]]
     assert not cm.plan(checkouts(env), claude_home=env["claude"], home=env["home"])[0].blocked
     (second / ".claude.json").write_text("{}")
