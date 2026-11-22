@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "agentToolVersion": "0.1.65",
+  "agentToolVersion": "0.1.74",
   "claude": {
     "allow": [
       "Bash(bun run agent-tool --help)",
@@ -41,6 +41,8 @@
       "Bash(bun run agent-tool permissions show *)",
       "Bash(bun run agent-tool permissions check *)",
       "Bash(bun run agent-tool proc list *)",
+      "Bash(bun run agent-tool perf diff *)",
+      "Bash(bun run agent-tool screenshots status *)",
       "Bash(bun run agent-tool bun install *)",
       "Bash(bun run agent-tool bun update *)",
       "Bash(bun run agent-tool bun remove *)",
@@ -108,6 +110,8 @@
       "Bash(node_modules/.bin/agent-tool permissions show *)",
       "Bash(node_modules/.bin/agent-tool permissions check *)",
       "Bash(node_modules/.bin/agent-tool proc list *)",
+      "Bash(node_modules/.bin/agent-tool perf diff *)",
+      "Bash(node_modules/.bin/agent-tool screenshots status *)",
       "Bash(node_modules/.bin/agent-tool bun install *)",
       "Bash(node_modules/.bin/agent-tool bun update *)",
       "Bash(node_modules/.bin/agent-tool bun remove *)",
@@ -175,6 +179,8 @@
       "Bash(agent-tool permissions show *)",
       "Bash(agent-tool permissions check *)",
       "Bash(agent-tool proc list *)",
+      "Bash(agent-tool perf diff *)",
+      "Bash(agent-tool screenshots status *)",
       "Bash(agent-tool bun install *)",
       "Bash(agent-tool bun update *)",
       "Bash(agent-tool bun remove *)",
@@ -209,6 +215,6 @@
   },
   "codex": {
     "file": ".codex/rules/agent-tool.rules",
-    "sha256": "7cc68966032e8998f4a8d83ff6ce0c4ec669c6cf9d4e0138eee137639ca525c8"
+    "sha256": "33009d14041a388254ddde6e9f8167b3a6822e1192f9d019a671c369bf6e6ccd"
   }
 }
