@@ -100,9 +100,8 @@ adds phases.
 updating it, run `bun run agents:sync` and commit the lockfile,
 `.agent-tool-skills.json`, `.agent-tool-permissions.json`, the generated skills
 under `.agents/skills` and `.claude/skills`, and the permission rules in
-`.claude/settings.json`, `.codex/rules/`, and
-`.gemini/policies/agent-tool.toml` together. Do not edit managed skills or
-the generated permission rules. Keep repository guidance here; do not add
+`.claude/settings.json` and `.codex/rules/` together. Do not edit managed skills
+or the generated permission rules. Keep repository guidance here; do not add
 CLAUDE.md.
 
 Use the installed `ship-pr` skill for authorized shipping, including an
